@@ -91,7 +91,7 @@
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.enabled = true; // Shadows enabled
         document.body.appendChild(renderer.domElement);
 
         // Lighting
@@ -100,6 +100,15 @@
         const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
         dirLight.position.set(50, 100, 50);
         dirLight.castShadow = true;
+        // Configure shadow properties for better quality
+        dirLight.shadow.mapSize.width = 2048;
+        dirLight.shadow.mapSize.height = 2048;
+        dirLight.shadow.camera.near = 10;
+        dirLight.shadow.camera.far = 200;
+        dirLight.shadow.camera.left = -100;
+        dirLight.shadow.camera.right = 100;
+        dirLight.shadow.camera.top = 100;
+        dirLight.shadow.camera.bottom = -100;
         scene.add(dirLight);
 
         // --- PLAYER CONTROLLER OBJECTS ---
@@ -182,8 +191,19 @@
 
         // --- TERRAIN & STONEHENGE GENERATION ---
         const textureLoader = new THREE.TextureLoader();
-        // Fallback grid texture for blocks
-        const stoneMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.9 });
+        
+        // Load and configure Stone Texture
+        const stoneTexture = textureLoader.load('./Stone.jpg');
+        stoneTexture.wrapS = stoneTexture.wrapT = THREE.RepeatWrapping;
+        stoneTexture.repeat.set(5, 5); // Repeat 5 times
+        
+        // Load and configure Grass Texture
+        const grassTexture = textureLoader.load('./Grass.jpg');
+        grassTexture.wrapS = grassTexture.wrapT = THREE.RepeatWrapping;
+        grassTexture.repeat.set(50, 50); // Repeat across large terrain
+
+        // Material for blocks (now uses stone texture)
+        const stoneMat = new THREE.MeshStandardMaterial({ map: stoneTexture, roughness: 0.7, metalness: 0.1 });
         
         // Helper noise function
         function noise(x, z) {
@@ -201,17 +221,56 @@
             posAttr.setY(i, y);
         }
         worldGeo.computeVertexNormals();
-        const terrain = new THREE.Mesh(worldGeo, new THREE.MeshStandardMaterial({ color: 0x336633 }));
+        
+        // Terrain Material (now uses grass texture)
+        const terrainMat = new THREE.MeshStandardMaterial({ map: grassTexture });
+        
+        const terrain = new THREE.Mesh(worldGeo, terrainMat);
         terrain.receiveShadow = true;
         scene.add(terrain);
 
         // Parkour Obstacles Array (for collision detection)
         const obstacles = [];
 
-        function createBlock(x, y, z, w, h, d) {
+        function createBlock(x, z, w, h, d) {
             const geo = new THREE.BoxGeometry(w, h, d);
+            
+            // Texture mapping: scale texture repetition based on block size
+            const repeatX = w / 5; 
+            const repeatY = h / 5;
+            const repeatZ = d / 5;
+            
+            const uvs = geo.attributes.uv.array;
+            // Iterate over each face's UVs (8 vertices per face * 3 components = 24 total)
+            for (let i = 0; i < uvs.length; i += 2) {
+                // Front and Back faces (using x/y -> scale by w/h)
+                if (i >= 0 && i < 8) { // Front face
+                    uvs[i] *= repeatX; uvs[i+1] *= repeatY;
+                } else if (i >= 8 && i < 16) { // Back face
+                    uvs[i] *= repeatX; uvs[i+1] *= repeatY;
+                }
+                // Top and Bottom faces (using x/z -> scale by w/d)
+                else if (i >= 16 && i < 24) { // Top face
+                    uvs[i] *= repeatX; uvs[i+1] *= repeatZ;
+                } else if (i >= 24 && i < 32) { // Bottom face
+                    uvs[i] *= repeatX; uvs[i+1] *= repeatZ;
+                }
+                // Right and Left faces (using z/y -> scale by d/h)
+                else if (i >= 32 && i < 40) { // Right face
+                    uvs[i] *= repeatZ; uvs[i+1] *= repeatY;
+                } else if (i >= 40 && i < 48) { // Left face
+                    uvs[i] *= repeatZ; uvs[i+1] *= repeatY;
+                }
+            }
+            geo.attributes.uv.needsUpdate = true;
+            
             const mesh = new THREE.Mesh(geo, stoneMat);
-            mesh.position.set(x, y + h/2, z);
+            
+            // Get terrain height at block center for proper placement
+            const terrainBaseY = getTerrainY(x, z); 
+            let y = terrainBaseY;
+            
+            mesh.position.set(x, y + h/2, z); // Center position is base + half height
             mesh.castShadow = true;
             mesh.receiveShadow = true;
             scene.add(mesh);
@@ -231,7 +290,7 @@
                 const z = cz + Math.sin(angle) * radius;
                 
                 // Tall pillar
-                createBlock(x, 0, z, 2, 8 + Math.random()*4, 2);
+                createBlock(x, z, 2, 8 + Math.random()*4, 2);
                 
                 // Lintel (connecting top) if lucky
                 if(Math.random() > 0.5) {
@@ -240,10 +299,35 @@
                     const nz = cz + Math.sin(nextAngle) * radius;
                     const midX = (x + nx) / 2;
                     const midZ = (z + nz) / 2;
-                    // Rotate bridge
-                    const bridge = new THREE.Mesh(new THREE.BoxGeometry(2, 1, 10), stoneMat);
-                    bridge.position.set(midX, 10, midZ);
-                    bridge.lookAt(x, 10, z);
+                    
+                    const blockHeight = 1;
+                    const terrainBaseY = getTerrainY(midX, midZ);
+
+                    // Create bridge geometry manually to control texture mapping for length
+                    const bridgeGeo = new THREE.BoxGeometry(2, 1, 10);
+                    // The long side of the bridge is the Z-axis (length 10)
+                    // We need to scale the UVs for the top/bottom faces to repeat 10/5 = 2 times
+                    const uvs = bridgeGeo.attributes.uv.array;
+                    // Top/Bottom faces (uses X/Z)
+                    for (let i = 16; i < 32; i += 2) { 
+                        uvs[i] *= (2 / 5); // X scale (width)
+                        uvs[i+1] *= (10 / 5); // Z scale (length)
+                    }
+                    // Right/Left faces (uses Z/Y)
+                    for (let i = 32; i < 48; i += 2) { 
+                        uvs[i] *= (10 / 5); // Z scale (length)
+                        uvs[i+1] *= (1 / 5); // Y scale (height)
+                    }
+                    bridgeGeo.attributes.uv.needsUpdate = true;
+
+
+                    const bridge = new THREE.Mesh(bridgeGeo, stoneMat);
+                    bridge.position.set(midX, terrainBaseY + 10 + blockHeight/2, midZ); // Base Y + 10 + half height
+                    bridge.lookAt(x, bridge.position.y, z);
+                    
+                    bridge.castShadow = true;
+                    bridge.receiveShadow = true;
+                    
                     scene.add(bridge);
                     obstacles.push(bridge);
                     bridge.userData.box = new THREE.Box3().setFromObject(bridge);
@@ -251,7 +335,7 @@
             }
             
             // Center jumping block
-            createBlock(cx, 0, cz, 4, 3, 4);
+            createBlock(cx, cz, 4, 3, 4);
         }
 
         // Generate a few henges
@@ -351,19 +435,25 @@
             return hits.length > 0;
         }
 
+        // Modified getTerrainY to check blocks and terrain height
         function getTerrainY(x, z) {
-            // Basic floor logic for terrain + boxes
-            // Check boxes first (simple AABB check)
-            let boxY = -999;
+            // Get terrain height from noise function (used to define the landscape)
+            let terrainY = noise(x, z) * 2;
+            if(terrainY < -2) terrainY = -2; // Water level flat
+            
+            // Check blocks/obstacles
+            let maxY = terrainY; // Start with the landscape height
+            
+            // Note: This AABB check is simple and might fail for rotated/complex obstacles.
+            // A more robust solution would involve raycasting down from the player.
             for(let ob of obstacles) {
                 const box = ob.userData.box;
                 if(x >= box.min.x && x <= box.max.x && z >= box.min.z && z <= box.max.z) {
-                    if(box.max.y > boxY) boxY = box.max.y;
+                    if(box.max.y > maxY) maxY = box.max.y;
                 }
             }
             
-            const terrainY = noise(x, z) * 2;
-            return Math.max(terrainY, boxY);
+            return maxY;
         }
 
         const clock = new THREE.Clock();
@@ -389,7 +479,7 @@
             } else {
                 state.cameraHeight = THREE.MathUtils.lerp(state.cameraHeight, 1.7, 0.2); // Stand
             }
-            camera.position.y = state.cameraHeight;
+            // camera.position.y is updated below with a clamp
 
             // 3. Movement
             const forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0,1,0), playerBody.rotation.y);
@@ -424,6 +514,15 @@
             } else {
                 state.onGround = false;
             }
+
+            // **NEW: Prevent view from sinking below ground**
+            // The camera position is relative to the playerBody, so we only update the camera's Y position
+            // to reflect the crouch/stand state, but we ensure it's always >= the required minimum height
+            camera.position.y = Math.max(
+                state.cameraHeight, // Target height (1.7 or 0.8)
+                (playerBody.position.y - groundH) + 0.1 // Minimum height above ground/block collision point
+            );
+
 
             // Weapon Sway (Idle)
             const time = clock.getElapsedTime();
