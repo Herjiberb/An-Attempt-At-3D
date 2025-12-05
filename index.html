@@ -101,8 +101,9 @@
         // Global variables
         let scene, camera, renderer, loader;
         let weaponGroup; // Group to hold the current weapon model
-        let currentModelName = 'BattleAxe';
-        let models = {}; // Object to store loaded model data: { 'BattleAxe': gltfScene, 'Sword': gltfScene }
+        let currentModelIndex = 0; // Index to cycle through models
+        const modelNames = ['BattleAxe', 'Sword', 'Pickaxe']; // List of model names
+        let models = {}; // Object to store loaded model data: { 'BattleAxe': gltfScene, 'Sword': gltfScene, 'Pickaxe': gltfScene }
         let isLoaded = false;
         
         const loadingMessage = document.getElementById('loading-message');
@@ -179,9 +180,10 @@
 
             // 4. Load Models
             loader = new GLTFLoader();
-            // Use the file access syntax for uploaded files
-            loadModel('uploaded:BattleAxe.glb', 'BattleAxe');
-            loadModel('uploaded:Sword.glb', 'Sword');
+            // FIX: Use relative paths for external hosting (like GitHub Pages)
+            loadModel('BattleAxe.glb', 'BattleAxe');
+            loadModel('Sword.glb', 'Sword');
+            loadModel('Pickaxe.glb', 'Pickaxe'); // ADDED NEW MODEL
 
             // 5. Setup Controls
             setupKeyboardControls();
@@ -202,22 +204,26 @@
 
                     models[name] = gltf.scene;
 
-                    if (Object.keys(models).length === 2) {
+                    // Check if all models (3 total) are loaded
+                    if (Object.keys(models).length === modelNames.length) {
                         isLoaded = true;
                         loadingMessage.style.display = 'none';
                         switchButton.style.display = 'block';
-                        attachWeapon('BattleAxe');
+                        attachWeapon(modelNames[currentModelIndex]);
                     }
                 },
                 function (xhr) {
-                    const percent = Math.round(xhr.loaded / xhr.total * 100);
-                    if (Object.keys(models).length < 2) {
-                        loadingMessage.textContent = `Loading ${name}: ${percent}%`;
-                    }
+                    const loadedCount = Object.keys(models).length;
+                    const totalModels = modelNames.length;
+                    const overallProgress = (loadedCount / totalModels) * 100 + (xhr.loaded / xhr.total) * (100 / totalModels);
+
+                    loadingMessage.textContent = `Loading... (${Math.floor(overallProgress)}%)`;
                 },
                 function (error) {
                     console.error(`An error occurred while loading ${name}:`, error);
-                    loadingMessage.textContent = `Error loading ${name}. Check console.`;
+                    // Crucial fix: The CORS error indicates these paths are not working externally. 
+                    // Tell the user where to put the files.
+                    loadingMessage.textContent = `Error loading ${name}. CORS/path error. Ensure "${filePath}" is in the same directory as index.html.`;
                 }
             );
         }
@@ -234,19 +240,34 @@
             // 2. Set the transform for first-person hold
             // Note: We use rotation.x for the "hold" angle, rotation.y for yaw (0.1 for slight rotation), and rotation.z for roll.
             // These values are optimized for a good first-person feel.
+            let scale = 1.5;
+            let position = new Vector3(0.6, -0.7, -1.0);
+            
+            // Adjustments for the Pickaxe to fit the screen better
+            if (name === 'Pickaxe') {
+                scale = 2.0; 
+                position.set(0.7, -0.8, -1.2); 
+            }
+
             modelScene.rotation.set(-0.5, Math.PI / 2 + 0.1, 0.5); 
-            modelScene.position.set(0.6, -0.7, -1.0); 
-            modelScene.scale.set(1.5, 1.5, 1.5); 
+            modelScene.position.copy(position); 
+            modelScene.scale.set(scale, scale, scale); 
             
             weaponGroup.add(modelScene);
-            currentModelName = name;
-            switchButton.textContent = `Switch Weapon (${name === 'BattleAxe' ? 'Sword' : 'Axe'})`;
+            
+            // Update button text to show the next weapon
+            const nextIndex = (currentModelIndex + 1) % modelNames.length;
+            switchButton.textContent = `Switch Weapon (${modelNames[nextIndex]})`;
         }
         
         // 4. Handle Weapon Switching
         switchButton.addEventListener('click', () => {
             if (!isLoaded) return;
-            const nextWeapon = currentModelName === 'BattleAxe' ? 'Sword' : 'BattleAxe';
+            
+            // Cycle to the next model
+            currentModelIndex = (currentModelIndex + 1) % modelNames.length;
+            const nextWeapon = modelNames[currentModelIndex];
+            
             attachWeapon(nextWeapon);
         });
 
@@ -333,7 +354,7 @@
 
                 // Weapon Animation (Rotation and Bobbing)
                 const time = clock.getElapsedTime();
-                const modelScene = models[currentModelName];
+                const modelScene = models[modelNames[currentModelIndex]];
                 
                 // Bobbing (up/down)
                 weaponGroup.position.y = Math.sin(time * 6) * 0.02;
