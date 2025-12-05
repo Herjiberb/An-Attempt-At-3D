@@ -3,35 +3,51 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3rd Person RPG - Infinite World</title>
+    <title>FPS Parkour - Infinite</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #87CEEB; user-select: none; }
-        #ui {
-            position: absolute; top: 20px; left: 20px; color: white;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            text-shadow: 2px 2px 0 #000; pointer-events: none;
+        body { margin: 0; overflow: hidden; background-color: #1a1a1a; user-select: none; }
+        #hud {
+            position: absolute; bottom: 20px; left: 20px; width: 300px;
+            font-family: 'Segoe UI', sans-serif; pointer-events: none;
+        }
+        .bar-container {
+            width: 100%; height: 20px; background: rgba(0,0,0,0.5);
+            margin-bottom: 5px; border: 2px solid #555;
+        }
+        #stamina-bar { width: 100%; height: 100%; background: #00ffcc; transition: width 0.1s; }
+        #crosshair {
+            position: absolute; top: 50%; left: 50%; width: 10px; height: 10px;
+            background: white; border-radius: 50%; transform: translate(-50%, -50%);
+            mix-blend-mode: difference; pointer-events: none;
         }
         #instructions {
-            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
-            color: rgba(255, 255, 255, 0.8); font-family: monospace; font-size: 14px;
-            text-align: center; pointer-events: none;
+            position: absolute; top: 20px; right: 20px; text-align: right;
+            color: rgba(255, 255, 255, 0.7); font-family: monospace; pointer-events: none;
         }
         #loading {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            color: white; font-family: sans-serif; font-size: 24px; font-weight: bold;
-            text-shadow: 0 0 10px black; transition: opacity 0.5s;
+            color: #00ffcc; font-family: sans-serif; font-size: 24px; font-weight: bold;
+            text-shadow: 0 0 10px #00ffcc;
         }
     </style>
 </head>
 <body>
-    <div id="ui">
-        <h2>Legend of the Infinite</h2>
-        <div id="weapon-name">Weapon: None</div>
+    <div id="crosshair"></div>
+    <div id="loading">GENERATING WORLD...</div>
+    
+    <div id="hud">
+        <div style="color:white; margin-bottom:5px;">STAMINA</div>
+        <div class="bar-container"><div id="stamina-bar"></div></div>
+        <div id="weapon-name" style="color:white; font-size: 14px;">FISTS</div>
     </div>
-    <div id="loading">Loading Assets...</div>
+
     <div id="instructions">
-        WASD to Move • MOUSE to Look • CLICK to Lock Cursor<br>
-        L-CLICK Attack • R-CLICK Switch Weapon
+        WASD - Move<br>
+        SHIFT - Sprint (Hold)<br>
+        SPACE - Jump / Wall Jump<br>
+        C - Slide / Crouch<br>
+        L-CLICK - Attack<br>
+        R-CLICK - Switch Weapon
     </div>
 
     <script type="importmap">
@@ -46,352 +62,385 @@
     <script type="module">
         import * as THREE from 'three';
         import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-        import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 
         // --- CONFIGURATION ---
-        const SEED = 12345; // Change this number to get a different world
-        const RENDER_DISTANCE = 80;
-        const SPEED = 10;
-        const JUMP_FORCE = 15;
+        const SEED = 888;
+        const CHUNK_SIZE = 100;
+        const MOVESPEED = 12;
+        const SPRINT_SPEED = 22;
+        const JUMP_FORCE = 18;
+        const GRAVITY = 40;
+        const WALL_JUMP_FORCE = 25;
         
-        // --- SEEDED NOISE (Simple Value Noise) ---
-        // This allows the terrain to be infinite yet consistent
-        function simpleHash(x, z) {
-            let h = Math.sin(x * 12.9898 + z * 78.233 + SEED) * 43758.5453;
-            return h - Math.floor(h);
-        }
-        function noise(x, z) {
-            let i = Math.floor(x);
-            let j = Math.floor(z);
-            let u = x - i;
-            let v = z - j;
-            // Smoothstep
-            u = u * u * (3 - 2 * u);
-            v = v * v * (3 - 2 * v);
-            
-            // Mix
-            const a = simpleHash(i, j);
-            const b = simpleHash(i + 1, j);
-            const c = simpleHash(i, j + 1);
-            const d = simpleHash(i + 1, j + 1);
-            
-            return a * (1 - u) * (1 - v) + 
-                   b * u * (1 - v) + 
-                   c * (1 - u) * v + 
-                   d * u * v;
-        }
-        function getTerrainHeight(x, z) {
-            // Combine frequencies for "Green Hill" look
-            let y = noise(x * 0.05, z * 0.05) * 10;
-            y += noise(x * 0.02, z * 0.02) * 20; // Big hills
-            return Math.max(y - 5, -10); // Floor
-        }
+        // --- GAME STATE ---
+        const state = {
+            stamina: 100,
+            isSprinting: false,
+            isSliding: false,
+            canWallJump: false,
+            onGround: false,
+            velocity: new THREE.Vector3(),
+            cameraHeight: 1.7
+        };
 
         // --- SCENE SETUP ---
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x87CEEB);
-        scene.fog = new THREE.Fog(0x87CEEB, 20, RENDER_DISTANCE - 10);
+        scene.background = new THREE.Color(0x87CEEB); // Sky
+        scene.fog = new THREE.Fog(0x87CEEB, 10, 90);
 
-        const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, RENDER_DISTANCE);
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.shadowMap.enabled = true;
-        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         document.body.appendChild(renderer.domElement);
 
-        // --- LIGHTING ---
-        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.8);
+        // Lighting
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.0);
         scene.add(hemiLight);
-
-        const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
         dirLight.position.set(50, 100, 50);
         dirLight.castShadow = true;
-        dirLight.shadow.camera.top = 50;
-        dirLight.shadow.camera.bottom = -50;
-        dirLight.shadow.camera.left = -50;
-        dirLight.shadow.camera.right = 50;
-        dirLight.shadow.mapSize.width = 2048;
-        dirLight.shadow.mapSize.height = 2048;
         scene.add(dirLight);
 
-        // --- INFINITE TERRAIN MESH ---
-        // A rolling grid that stays under the player
-        const CHUNK_SIZE = 100;
-        const RES = 64;
-        const geo = new THREE.PlaneGeometry(CHUNK_SIZE * 2, CHUNK_SIZE * 2, RES, RES);
-        geo.rotateX(-Math.PI / 2);
-        const mat = new THREE.MeshStandardMaterial({ 
-            color: 0x4C9A2A, 
-            roughness: 0.9,
-            side: THREE.DoubleSide
-        });
-        const terrainMesh = new THREE.Mesh(geo, mat);
-        terrainMesh.receiveShadow = true;
-        scene.add(terrainMesh);
-
-        function updateTerrain(playerPos) {
-            // Snap mesh to player grid
-            const snapX = Math.floor(playerPos.x);
-            const snapZ = Math.floor(playerPos.z);
-            terrainMesh.position.set(snapX, 0, snapZ);
-            
-            // Update vertices based on world position
-            const posAttr = terrainMesh.geometry.attributes.position;
-            for(let i=0; i < posAttr.count; i++) {
-                // Local coordinate
-                const lx = (i % (RES + 1)) / RES * (CHUNK_SIZE * 2) - CHUNK_SIZE;
-                const lz = Math.floor(i / (RES + 1)) / RES * (CHUNK_SIZE * 2) - CHUNK_SIZE;
-                
-                // World coordinate
-                const wx = lx + snapX;
-                const wz = lz + snapZ;
-                
-                // Set Height
-                posAttr.setY(i, getTerrainHeight(wx, wz));
-            }
-            posAttr.needsUpdate = true;
-            terrainMesh.geometry.computeVertexNormals();
-        }
-
-        // --- PLAYER & ASSETS ---
-        const playerContainer = new THREE.Group();
-        scene.add(playerContainer);
-
-        // Camera Pivot (The invisible point the camera rotates around)
-        const cameraPivot = new THREE.Object3D();
-        playerContainer.add(cameraPivot);
-        cameraPivot.position.y = 1.5; // Look at head height
+        // --- PLAYER CONTROLLER OBJECTS ---
+        // In FPS, the "Player" is just a capsule/point. The camera sits on top.
+        const playerBody = new THREE.Group();
+        scene.add(playerBody);
         
-        // Camera Holder (For distance)
-        const cameraHolder = new THREE.Object3D();
-        cameraHolder.position.z = 6; // Distance behind player
-        cameraPivot.add(cameraHolder);
-        cameraHolder.add(camera);
+        // Attach camera to player body
+        playerBody.add(camera);
+        camera.position.y = state.cameraHeight;
 
-        // Hand / Weapon Holder
+        // Weapon Holder (Attached to Camera so it moves with view)
         const handGroup = new THREE.Group();
-        // Since Player.glb has no bones, we position this relative to the body roughly where a hand is
-        handGroup.position.set(0.4, 1.0, 0.4); 
-        playerContainer.add(handGroup);
+        handGroup.position.set(0.5, -0.4, -0.8); // Bottom right of screen
+        handGroup.rotation.set(0, -0.2, 0); // Slight tilt
+        camera.add(handGroup);
 
+        // --- ASSETS ---
         const loader = new GLTFLoader();
         const weapons = [];
-        let currentWeaponIdx = 0;
-        let enemyModel = null;
+        let currentWeaponIdx = -1;
 
-        // Asset Loader
-        async function loadGameAssets() {
+        async function loadAssets() {
             try {
-                // 1. Load Player
+                // 1. Load Player (Invisible, just for "presence" logic if needed later)
                 const playerGltf = await loader.loadAsync('./Player.glb');
-                const playerMesh = playerGltf.scene;
-                playerMesh.traverse(c => { if(c.isMesh) c.castShadow = true; });
-                // Scale player if needed (check your export, assumed 1 unit = 1 meter)
-                // playerMesh.scale.set(1,1,1); 
-                playerContainer.add(playerMesh);
+                const pMesh = playerGltf.scene;
+                pMesh.visible = false; // "Rendered completely out of view"
+                playerBody.add(pMesh);
 
                 // 2. Load Weapons
-                const weaponFiles = ['BattleAxe.glb', 'Sword.glb', 'Pickaxe.glb'];
-                const weaponNames = ['Battle Axe', 'Sword', 'Pickaxe'];
+                const files = ['BattleAxe.glb', 'Sword.glb', 'Pickaxe.glb'];
+                const names = ['Battle Axe', 'Sword', 'Pickaxe'];
                 
-                for(let i=0; i<weaponFiles.length; i++) {
-                    const gltf = await loader.loadAsync('./' + weaponFiles[i]);
-                    const wMesh = gltf.scene;
-                    // Standardize weapon scale/rotation if exports are weird
-                    // wMesh.scale.set(1.5, 1.5, 1.5); 
-                    wMesh.visible = false;
-                    handGroup.add(wMesh);
-                    weapons.push({ mesh: wMesh, name: weaponNames[i] });
-                }
-                
-                if(weapons.length > 0) {
-                    weapons[0].mesh.visible = true;
-                    document.getElementById('weapon-name').innerText = "Weapon: " + weapons[0].name;
+                for(let i=0; i<files.length; i++) {
+                    const gltf = await loader.loadAsync('./' + files[i]);
+                    const w = gltf.scene;
+                    
+                    // Adjust scales/rotations to look good in First Person
+                    // These numbers are tweaked for standard FPS view
+                    if(names[i] === 'Sword') {
+                        w.scale.set(1.5, 1.5, 1.5);
+                        w.rotation.set(0, Math.PI/2, 0); 
+                    } else if (names[i] === 'Battle Axe') {
+                        w.scale.set(2, 2, 2);
+                        w.rotation.set(0, Math.PI, 0);
+                    } else {
+                        w.scale.set(2, 2, 2);
+                    }
+                    
+                    w.visible = false;
+                    handGroup.add(w);
+                    weapons.push({ mesh: w, name: names[i] });
                 }
 
-                // 3. Load Enemy (for scattering)
-                const enemyGltf = await loader.loadAsync('./Enemy.glb');
-                enemyModel = enemyGltf.scene;
-                enemyModel.traverse(c => { if(c.isMesh) { c.castShadow = true; c.receiveShadow = true; }});
-                
-                // Spawn some enemies
-                spawnEnemies();
-
+                if(weapons.length > 0) switchWeapon(0);
                 document.getElementById('loading').style.display = 'none';
 
-            } catch (error) {
-                console.error("Error loading assets:", error);
-                document.getElementById('loading').innerText = "Error Loading Files (See Console)";
+            } catch (e) {
+                console.error(e);
+                document.getElementById('loading').innerText = "Asset Error";
             }
         }
-        loadGameAssets();
+        loadAssets();
 
-        const enemies = [];
-        function spawnEnemies() {
-            if(!enemyModel) return;
-            // Spawn 10 enemies near start
-            for(let i=0; i<10; i++) {
-                const e = enemyModel.clone();
-                const angle = Math.random() * Math.PI * 2;
-                const dist = 10 + Math.random() * 20;
-                e.position.set(Math.sin(angle)*dist, 0, Math.cos(angle)*dist);
-                // Set height
-                e.position.y = getTerrainHeight(e.position.x, e.position.z);
-                scene.add(e);
-                enemies.push(e);
-            }
-        }
-
-        // --- CONTROLS ---
-        // Pointer Locking for Mouse Look
-        const canvas = renderer.domElement;
-        canvas.addEventListener('click', () => {
-            canvas.requestPointerLock();
-        });
-
-        let isLocked = false;
-        document.addEventListener('pointerlockchange', () => {
-            isLocked = document.pointerLockElement === canvas;
-        });
-
-        // Mouse Look Logic
-        let camPitch = 0;
-        document.addEventListener('mousemove', (e) => {
-            if(!isLocked) return;
-            // Rotate Player Container for YAW (Left/Right)
-            // Ideally we rotate the cameraPivot for looking, and player for moving
-            // But for standard MMO feel: Mouse X rotates player body
-            playerContainer.rotation.y -= e.movementX * 0.002;
+        function switchWeapon(idx) {
+            if(weapons.length === 0) return;
+            // Hide all
+            weapons.forEach(w => w.mesh.visible = false);
             
-            // Mouse Y rotates camera pivot (Pitch)
-            camPitch -= e.movementY * 0.002;
-            camPitch = Math.max(-0.5, Math.min(1.0, camPitch)); // Clamp look up/down
-            cameraPivot.rotation.x = camPitch;
+            if(idx === -1) idx = 0;
+            currentWeaponIdx = idx % weapons.length;
+            
+            weapons[currentWeaponIdx].mesh.visible = true;
+            document.getElementById('weapon-name').innerText = weapons[currentWeaponIdx].name;
+
+            // Little "equip" pop animation
+            handGroup.position.y = -0.8;
+        }
+
+        // --- TERRAIN & STONEHENGE GENERATION ---
+        const textureLoader = new THREE.TextureLoader();
+        // Fallback grid texture for blocks
+        const stoneMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.9 });
+        
+        // Helper noise function
+        function noise(x, z) {
+            return (Math.sin(x * 0.05 + SEED) + Math.cos(z * 0.05 + SEED)) * 2;
+        }
+
+        const worldGeo = new THREE.PlaneGeometry(300, 300, 100, 100);
+        worldGeo.rotateX(-Math.PI/2);
+        const posAttr = worldGeo.attributes.position;
+        for(let i=0; i<posAttr.count; i++) {
+            const x = posAttr.getX(i);
+            const z = posAttr.getZ(i);
+            let y = noise(x, z) * 2; // Low rolling hills
+            if(y < -2) y = -2; // Water level flat
+            posAttr.setY(i, y);
+        }
+        worldGeo.computeVertexNormals();
+        const terrain = new THREE.Mesh(worldGeo, new THREE.MeshStandardMaterial({ color: 0x336633 }));
+        terrain.receiveShadow = true;
+        scene.add(terrain);
+
+        // Parkour Obstacles Array (for collision detection)
+        const obstacles = [];
+
+        function createBlock(x, y, z, w, h, d) {
+            const geo = new THREE.BoxGeometry(w, h, d);
+            const mesh = new THREE.Mesh(geo, stoneMat);
+            mesh.position.set(x, y + h/2, z);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            scene.add(mesh);
+            obstacles.push(mesh);
+            
+            // Add bounding box for physics
+            mesh.userData.box = new THREE.Box3().setFromObject(mesh);
+        }
+
+        function generateStonehenge(cx, cz) {
+            // Circle of pillars
+            const radius = 15;
+            const count = 8;
+            for(let i=0; i<count; i++) {
+                const angle = (i / count) * Math.PI * 2;
+                const x = cx + Math.cos(angle) * radius;
+                const z = cz + Math.sin(angle) * radius;
+                
+                // Tall pillar
+                createBlock(x, 0, z, 2, 8 + Math.random()*4, 2);
+                
+                // Lintel (connecting top) if lucky
+                if(Math.random() > 0.5) {
+                    const nextAngle = ((i+1) / count) * Math.PI * 2;
+                    const nx = cx + Math.cos(nextAngle) * radius;
+                    const nz = cz + Math.sin(nextAngle) * radius;
+                    const midX = (x + nx) / 2;
+                    const midZ = (z + nz) / 2;
+                    // Rotate bridge
+                    const bridge = new THREE.Mesh(new THREE.BoxGeometry(2, 1, 10), stoneMat);
+                    bridge.position.set(midX, 10, midZ);
+                    bridge.lookAt(x, 10, z);
+                    scene.add(bridge);
+                    obstacles.push(bridge);
+                    bridge.userData.box = new THREE.Box3().setFromObject(bridge);
+                }
+            }
+            
+            // Center jumping block
+            createBlock(cx, 0, cz, 4, 3, 4);
+        }
+
+        // Generate a few henges
+        generateStonehenge(0, -30);
+        generateStonehenge(50, 50);
+        generateStonehenge(-50, 40);
+
+        // --- INPUTS ---
+        const keys = { w:false, a:false, s:false, d:false, space:false, shift:false, c:false };
+        
+        // Pointer Lock
+        document.body.addEventListener('click', (e) => {
+            if(document.pointerLockElement !== document.body) {
+                document.body.requestPointerLock();
+            } else {
+                if(e.button === 0) attack();
+                if(e.button === 2) switchWeapon(currentWeaponIdx + 1);
+            }
         });
 
-        // Keyboard
-        const keys = { w:false, a:false, s:false, d:false, space:false };
+        document.addEventListener('mousemove', (e) => {
+            if(document.pointerLockElement === document.body) {
+                playerBody.rotation.y -= e.movementX * 0.002;
+                camera.rotation.x -= e.movementY * 0.002;
+                camera.rotation.x = Math.max(-1.5, Math.min(1.5, camera.rotation.x));
+            }
+        });
+
         window.addEventListener('keydown', (e) => {
             const k = e.key.toLowerCase();
             if(keys.hasOwnProperty(k)) keys[k] = true;
-            if(e.code === 'Space') keys.space = true;
+            if(e.code === 'Space') {
+                keys.space = true;
+                handleJump();
+            }
+            if(e.shiftKey) keys.shift = true;
         });
+        
         window.addEventListener('keyup', (e) => {
             const k = e.key.toLowerCase();
             if(keys.hasOwnProperty(k)) keys[k] = false;
             if(e.code === 'Space') keys.space = false;
+            if(!e.shiftKey) keys.shift = false;
         });
 
-        // Mouse Click Actions
-        window.addEventListener('mousedown', (e) => {
-            if(!isLocked) return;
-
-            if(e.button === 0) { // Left Click - Attack
-                performAttack();
-            } else if (e.button === 2) { // Right Click - Switch Weapon
-                switchWeapon();
-            }
-        });
-        
+        // --- PHYSICS & LOGIC ---
         let isAttacking = false;
-        function performAttack() {
+        function attack() {
             if(isAttacking) return;
             isAttacking = true;
+            // Procedural recoil/stab
+            const startZ = handGroup.position.z;
+            const startRot = handGroup.rotation.x;
             
-            // Procedural Attack Animation (Swing handGroup)
-            let rot = 0;
-            const initialRot = handGroup.rotation.x;
-            const speed = 0.2;
-            
-            // Simple swing down animation loop
-            const attackAnim = setInterval(() => {
-                rot += speed;
-                handGroup.rotation.x = initialRot + Math.sin(rot) * 2; // Swing
+            let t = 0;
+            const anim = setInterval(() => {
+                t += 0.2;
+                // Stab forward and rotate down
+                handGroup.position.z = startZ - Math.sin(t) * 0.5; 
+                handGroup.rotation.x = startRot - Math.sin(t) * 0.5;
                 
-                if(rot > Math.PI) {
-                    clearInterval(attackAnim);
-                    handGroup.rotation.x = initialRot;
+                if(t >= Math.PI) {
+                    clearInterval(anim);
+                    handGroup.position.z = startZ;
+                    handGroup.rotation.x = startRot;
                     isAttacking = false;
                 }
             }, 16);
         }
 
-        function switchWeapon() {
-            if(weapons.length === 0) return;
-            // Hide current
-            weapons[currentWeaponIdx].mesh.visible = false;
-            // Increment
-            currentWeaponIdx = (currentWeaponIdx + 1) % weapons.length;
-            // Show new
-            weapons[currentWeaponIdx].mesh.visible = true;
-            document.getElementById('weapon-name').innerText = "Weapon: " + weapons[currentWeaponIdx].name;
+        function handleJump() {
+            // Normal Jump
+            if(state.onGround) {
+                state.velocity.y = JUMP_FORCE;
+            } 
+            // Wall Jump
+            else if (checkForWall()) {
+                state.velocity.y = WALL_JUMP_FORCE;
+                // Push back from wall (simple bounce logic)
+                // In a real engine we'd use the wall normal, here we just push opposite to view
+                const viewDir = new THREE.Vector3();
+                camera.getWorldDirection(viewDir);
+                state.velocity.x = -viewDir.x * 20;
+                state.velocity.z = -viewDir.z * 20;
+            }
         }
 
-        // --- GAME LOOP ---
-        const clock = new THREE.Clock();
-        const velocity = new THREE.Vector3();
-        let isGrounded = false;
+        const raycaster = new THREE.Raycaster();
+        
+        function checkForWall() {
+            // Raycast in front of player
+            const dir = new THREE.Vector3();
+            camera.getWorldDirection(dir);
+            raycaster.set(playerBody.position, dir);
+            raycaster.far = 2.0; // Close range
+            const hits = raycaster.intersectObjects(obstacles);
+            return hits.length > 0;
+        }
 
-        function animate() {
-            requestAnimationFrame(animate);
-            
-            const delta = Math.min(clock.getDelta(), 0.1);
-            
-            // 1. Terrain Update (Visual)
-            // Only update every few frames or if moved significantly for performance, 
-            // but here we do it every frame for smoothness on modern devices.
-            updateTerrain(playerContainer.position);
-
-            // 2. Physics & Movement
-            if(isLocked) {
-                const forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0,1,0), playerContainer.rotation.y);
-                const right = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0,1,0), playerContainer.rotation.y);
-                
-                const moveDir = new THREE.Vector3();
-                if(keys.w) moveDir.add(forward);
-                if(keys.s) moveDir.sub(forward);
-                if(keys.d) moveDir.add(right);
-                if(keys.a) moveDir.sub(right);
-                
-                if(moveDir.length() > 0) moveDir.normalize();
-
-                velocity.x = moveDir.x * SPEED;
-                velocity.z = moveDir.z * SPEED;
-            } else {
-                velocity.x = 0;
-                velocity.z = 0;
+        function getTerrainY(x, z) {
+            // Basic floor logic for terrain + boxes
+            // Check boxes first (simple AABB check)
+            let boxY = -999;
+            for(let ob of obstacles) {
+                const box = ob.userData.box;
+                if(x >= box.min.x && x <= box.max.x && z >= box.min.z && z <= box.max.z) {
+                    if(box.max.y > boxY) boxY = box.max.y;
+                }
             }
+            
+            const terrainY = noise(x, z) * 2;
+            return Math.max(terrainY, boxY);
+        }
+
+        const clock = new THREE.Clock();
+
+        function update() {
+            requestAnimationFrame(update);
+            const delta = Math.min(clock.getDelta(), 0.1);
+
+            // 1. Stamina Logic
+            if(keys.shift && (keys.w || keys.a || keys.s || keys.d)) {
+                state.stamina = Math.max(0, state.stamina - 30 * delta);
+            } else {
+                state.stamina = Math.min(100, state.stamina + 15 * delta);
+            }
+            document.getElementById('stamina-bar').style.width = state.stamina + '%';
+
+            // 2. Speed Calculation
+            let speed = MOVESPEED;
+            if(keys.shift && state.stamina > 0) speed = SPRINT_SPEED;
+            if(keys.c) { // Sliding/Crouch
+                state.cameraHeight = THREE.MathUtils.lerp(state.cameraHeight, 0.8, 0.2); // Duck
+                if(speed > MOVESPEED) speed += 5; // Slide boost
+            } else {
+                state.cameraHeight = THREE.MathUtils.lerp(state.cameraHeight, 1.7, 0.2); // Stand
+            }
+            camera.position.y = state.cameraHeight;
+
+            // 3. Movement
+            const forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0,1,0), playerBody.rotation.y);
+            const right = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0,1,0), playerBody.rotation.y);
+            
+            const moveDir = new THREE.Vector3();
+            if(keys.w) moveDir.add(forward);
+            if(keys.s) moveDir.sub(forward);
+            if(keys.d) moveDir.add(right);
+            if(keys.a) moveDir.sub(right);
+            
+            if(moveDir.length() > 0) moveDir.normalize();
+
+            // Apply inertia/slide
+            state.velocity.x = THREE.MathUtils.lerp(state.velocity.x, moveDir.x * speed, keys.c ? 0.02 : 0.1);
+            state.velocity.z = THREE.MathUtils.lerp(state.velocity.z, moveDir.z * speed, keys.c ? 0.02 : 0.1);
 
             // Gravity
-            velocity.y -= 30 * delta;
+            state.velocity.y -= GRAVITY * delta;
 
-            // Apply Move
-            playerContainer.position.x += velocity.x * delta;
-            playerContainer.position.z += velocity.z * delta;
-            playerContainer.position.y += velocity.y * delta;
+            // Apply Position
+            playerBody.position.x += state.velocity.x * delta;
+            playerBody.position.z += state.velocity.z * delta;
+            playerBody.position.y += state.velocity.y * delta;
 
-            // Collision with Ground
-            const groundHeight = getTerrainHeight(playerContainer.position.x, playerContainer.position.z);
-            if(playerContainer.position.y < groundHeight) {
-                playerContainer.position.y = groundHeight;
-                velocity.y = 0;
-                isGrounded = true;
+            // 4. Collision (Ground)
+            const groundH = getTerrainY(playerBody.position.x, playerBody.position.z);
+            if(playerBody.position.y < groundH) {
+                playerBody.position.y = groundH;
+                state.velocity.y = 0;
+                state.onGround = true;
             } else {
-                isGrounded = false;
+                state.onGround = false;
             }
 
-            // Jump
-            if(keys.space && isGrounded) {
-                velocity.y = JUMP_FORCE;
+            // Weapon Sway (Idle)
+            const time = clock.getElapsedTime();
+            if(!isAttacking) {
+                handGroup.position.y = -0.4 + Math.sin(time * 2) * 0.02;
+                handGroup.position.x = 0.5 + Math.cos(time * 1.5) * 0.02;
             }
-
-            // 3. Enemy Cleanup / Logic (Simple bobbing)
-            enemies.forEach(e => {
-                // Keep enemy on ground
-                const h = getTerrainHeight(e.position.x, e.position.z);
-                e.position.y = h;
-                e.lookAt(playerContainer.position); // Face player
-            });
+            // Weapon Run Sway
+            if((keys.w||keys.a||keys.s||keys.d) && state.onGround) {
+                handGroup.position.y += Math.sin(time * 15) * 0.05;
+            }
+            
+            // "Lerp" weapon back to position after attack
+            if(!isAttacking) {
+               handGroup.rotation.x = THREE.MathUtils.lerp(handGroup.rotation.x, 0, 0.1);
+               handGroup.position.z = THREE.MathUtils.lerp(handGroup.position.z, -0.8, 0.1); 
+            }
 
             renderer.render(scene, camera);
         }
@@ -403,7 +452,7 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
         });
 
-        animate();
+        update();
     </script>
 </body>
 </html>
