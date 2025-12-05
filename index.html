@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shiny First-Person Viewer</title>
+    <title>Shiny First-Person Viewer with Hilly Terrain</title>
     <!-- Load Three.js core library -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <!-- Load GLTFLoader to handle .glb files -->
@@ -132,10 +132,12 @@
 
         // Global variables
         let scene, camera, renderer, controls;
-        let weaponYawGroup; // NEW: The group that rotates horizontally (yaw), weapon attached here
+        let weaponYawGroup; // The group that rotates horizontally (yaw), weapon attached here
         let weaponModelGroup; // The weapon's local group for bobbing/swing
         let terrainMesh; // The mesh representing the hilly ground
         let isLoaded = false;
+        // FIX: Declare loader in the global scope so it's accessible in init() and loadModel()
+        let loader; 
         
         // Model data and cycling
         let currentModelIndex = 0;
@@ -232,7 +234,7 @@
             createTerrain();
 
             // 6. Load Models
-            loader = new GLTFLoader();
+            loader = new GLTFLoader(); // Initialize the loader here
             modelNames.forEach(name => {
                 loadModel(`${name}.glb`, name);
             });
@@ -295,7 +297,8 @@
         // --- MODEL LOADING AND PLACEMENT ---
 
         function loadModel(filePath, name) {
-            loader.load(
+            // Use the globally declared loader
+            loader.load( 
                 filePath,
                 function (gltf) {
                     // SHININESS FIX: Set material properties for all meshes
@@ -326,14 +329,15 @@
                         loadingMessage.style.display = 'none';
                         switchButton.style.display = 'block';
                         
-                        attachWeapon(modelNames[currentModelIndex]);
+                        // Exclude 'Enemy' model from the switchable weapons list
+                        attachWeapon(modelNames[currentModelIndex % (modelNames.length - 1)]); 
                         spawnEnemies();
                     }
                 },
                 null,
                 function (error) {
                     console.error(`An error occurred while loading ${name}:`, error);
-                    loadingMessage.innerHTML = `Error loading ${name}.<br/>Ensure file is present.`;
+                    loadingMessage.innerHTML = `Error loading ${name}.<br/>Check console for details.`;
                 }
             );
         }
@@ -379,15 +383,18 @@
             
             weaponModelGroup.add(modelScene);
             
-            const nextIndex = (currentModelIndex + 1) % (modelNames.length - 1); 
+            // Calculate the next weapon index, excluding the 'Enemy' which is the last in the array
+            const weaponCount = modelNames.length - 1; 
+            const nextIndex = (currentModelIndex + 1) % weaponCount; 
             switchButton.textContent = `Switch Weapon (${modelNames[nextIndex]})`;
         }
         
         // Handle Weapon Switching
         switchButton.addEventListener('click', () => {
-            if (!isLoaded) return;
+            if (!controls.isLocked || !isLoaded) return;
             
-            currentModelIndex = (currentModelIndex + 1) % (modelNames.length - 1); 
+            const weaponCount = modelNames.length - 1; 
+            currentModelIndex = (currentModelIndex + 1) % weaponCount; 
             const nextWeapon = modelNames[currentModelIndex];
             
             attachWeapon(nextWeapon);
@@ -413,7 +420,10 @@
 
             controls.addEventListener('unlock', function () {
                 blocker.style.display = 'flex';
-                switchButton.style.display = 'none';
+                // Only hide the button if we are showing the instructions/blocker
+                if (blocker.style.display === 'flex') {
+                    switchButton.style.display = 'none'; 
+                }
             });
         }
 
@@ -535,14 +545,13 @@
             const bobFrequency = isMoving ? 12 : 6; 
             const bobAmplitude = isMoving ? 0.02 : 0.005; // Reduced bobbing amplitude
 
-            // Vertical bob (Y axis) relative to its base position (-0.7)
+            // Vertical bob (Y axis) relative to its base position
             let yBob = Math.sin(bobTime * bobFrequency) * bobAmplitude;
             
             // Horizontal sway (X axis)
             let xSway = Math.cos(bobTime * bobFrequency / 2) * bobAmplitude * 0.5;
 
             // Apply to the nested weapon group (weaponModelGroup)
-            // Base Y position is -0.7, base X position is 0.6
             weaponModelGroup.position.y = yBob; 
             weaponModelGroup.position.x = xSway;
             
