@@ -15,8 +15,8 @@
             overflow: hidden;
             font-family: 'Inter', sans-serif;
             color: #ffffff;
-            /* Create a simple sky gradient background */
-            background: linear-gradient(to bottom, #87ceeb 0%, #ffffff 70%);
+            /* Create a simple sky background color */
+            background-color: #87ceeb; /* Light Sky Blue */
         }
         canvas {
             display: block;
@@ -68,6 +68,18 @@
             background-color: #45a049;
             transform: translateY(-1px);
         }
+
+        #instructions {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 0.9em;
+            color: #fff;
+            pointer-events: none;
+        }
     </style>
 </head>
 <body>
@@ -75,12 +87,15 @@
         <div id="loading-message">Loading models...</div>
         <button id="switch-button" style="display: none;">Switch Weapon (Axe)</button>
     </div>
+    <div id="instructions">
+        WASD to Move | Mouse to Look Around
+    </div>
     
     <script type="module">
         // Import necessary components from the global THREE object
         const { 
             Scene, PerspectiveCamera, WebGLRenderer, DirectionalLight, HemisphereLight, 
-            GLTFLoader, Clock, Group 
+            GLTFLoader, Clock, Group, Vector3, Mesh, PlaneGeometry, MeshStandardMaterial
         } = THREE;
 
         // Global variables
@@ -93,43 +108,55 @@
         const loadingMessage = document.getElementById('loading-message');
         const switchButton = document.getElementById('switch-button');
         const clock = new Clock();
+        
+        // Movement Variables
+        let moveForward = false;
+        let moveBackward = false;
+        let moveLeft = false;
+        let moveRight = false;
+        const velocity = new Vector3();
+        const direction = new Vector3();
+        const cameraPitch = new Group(); // For vertical camera rotation
+
+        // Mouse look sensitivity
+        const lookSensitivity = 0.002;
+        let yaw = 0;
+        let pitch = 0;
 
         // 1. Initialization
         function init() {
             // Scene setup
             scene = new Scene();
+            scene.background = new THREE.Color(0x87ceeb); // Blue sky background
 
-            // Camera setup (First-Person Perspective)
-            // FOV, Aspect Ratio, Near, Far clipping plane
+            // Camera setup
             camera = new PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            // Position the camera slightly up, mimicking eye level
-            camera.position.set(0, 1.6, 0); // Camera at (0, 1.6, 0) - average human height
+            camera.position.set(0, 1.6, 0); // Average human height
 
-            // Weapon Group: This group is attached to the camera and holds the weapon
+            // Setup camera pitch group for vertical rotation (mouse look)
+            camera.add(cameraPitch); 
+            scene.add(camera);
+
+            // Weapon Group: Attached to the cameraPitch group so it moves with the view
             weaponGroup = new Group();
-            camera.add(weaponGroup);
-            scene.add(camera); // Add camera (and its children) to the scene
-
+            cameraPitch.add(weaponGroup);
+            
             // Renderer setup
             renderer = new WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
-            // Enable physically correct lighting for professional shading
             renderer.toneMapping = THREE.ACESFilmicToneMapping;
             renderer.toneMappingExposure = 1.0; 
             renderer.outputEncoding = THREE.sRGBEncoding;
             
             document.body.appendChild(renderer.domElement);
 
-            // 2. Lighting Setup (Brightly Shaded and Nice)
-            
-            // Hemisphere Light: Provides soft ambient light, simulating sky and ground reflection
-            const hemiLight = new HemisphereLight(0xffffff, 0x444444, 0.8);
+            // 2. Lighting Setup
+            const hemiLight = new HemisphereLight(0xffffff, 0x00ff00, 0.8); // Adjusted ground color for green reflection
             hemiLight.position.set(0, 50, 0);
             scene.add(hemiLight);
 
-            // Directional Light: Simulates the sun, creating strong highlights and shadows
-            const dirLight = new DirectionalLight(0xffffff, 1.5); // Brighter light
+            const dirLight = new DirectionalLight(0xffffff, 1.5); 
             dirLight.position.set(5, 20, 10);
             dirLight.castShadow = true;
             dirLight.shadow.mapSize.width = 1024;
@@ -138,23 +165,27 @@
             dirLight.shadow.camera.far = 50;
             scene.add(dirLight);
 
-            // Add a simple ground plane (optional, but good for context)
-            const ground = new THREE.Mesh(
-                new THREE.PlaneGeometry(100, 100),
-                new THREE.MeshStandardMaterial({ color: 0x666666 })
+            // 3. Infinite Green Flat Ground
+            const ground = new Mesh(
+                new PlaneGeometry(1000, 1000), // Large plane for 'infinite' look
+                new MeshStandardMaterial({ color: 0x228B22 }) // Forest Green color
             );
             ground.rotation.x = -Math.PI / 2;
             ground.receiveShadow = true;
             scene.add(ground);
             
-            // Enable shadow map for the renderer
             renderer.shadowMap.enabled = true;
-            renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Softer shadows
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
 
-            // 3. Load Models
+            // 4. Load Models
             loader = new GLTFLoader();
-            loadModel('BattleAxe.glb', 'BattleAxe');
-            loadModel('Sword.glb', 'Sword');
+            // Use the file access syntax for uploaded files
+            loadModel('uploaded:BattleAxe.glb', 'BattleAxe');
+            loadModel('uploaded:Sword.glb', 'Sword');
+
+            // 5. Setup Controls
+            setupKeyboardControls();
+            setupMouseLook();
         }
 
         // Function to handle GLB loading
@@ -162,7 +193,6 @@
             loader.load(
                 filePath,
                 function (gltf) {
-                    // Traverse and enable shadow casting/receiving
                     gltf.scene.traverse(function (child) {
                         if (child.isMesh) {
                             child.castShadow = true;
@@ -172,24 +202,19 @@
 
                     models[name] = gltf.scene;
 
-                    // Initial attachment for the first model loaded
                     if (Object.keys(models).length === 2) {
                         isLoaded = true;
                         loadingMessage.style.display = 'none';
                         switchButton.style.display = 'block';
-                        // Attach the initial model (BattleAxe)
                         attachWeapon('BattleAxe');
                     }
                 },
-                // Progress Callback
                 function (xhr) {
                     const percent = Math.round(xhr.loaded / xhr.total * 100);
-                    // Only update loading message if we haven't loaded everything yet
                     if (Object.keys(models).length < 2) {
                         loadingMessage.textContent = `Loading ${name}: ${percent}%`;
                     }
                 },
-                // Error Callback
                 function (error) {
                     console.error(`An error occurred while loading ${name}:`, error);
                     loadingMessage.textContent = `Error loading ${name}. Check console.`;
@@ -207,10 +232,11 @@
             const modelScene = models[name];
             
             // 2. Set the transform for first-person hold
-            // These values are often found by trial and error for a good 'hold' feeling
-            modelScene.rotation.set(0, Math.PI / 2, 0); // Rotate to face forward
-            modelScene.position.set(0.6, -0.6, -1.0); // Offset to lower-right in front of the camera
-            modelScene.scale.set(1.5, 1.5, 1.5); // Scale up for better visibility
+            // Note: We use rotation.x for the "hold" angle, rotation.y for yaw (0.1 for slight rotation), and rotation.z for roll.
+            // These values are optimized for a good first-person feel.
+            modelScene.rotation.set(-0.5, Math.PI / 2 + 0.1, 0.5); 
+            modelScene.position.set(0.6, -0.7, -1.0); 
+            modelScene.scale.set(1.5, 1.5, 1.5); 
             
             weaponGroup.add(modelScene);
             currentModelName = name;
@@ -224,17 +250,97 @@
             attachWeapon(nextWeapon);
         });
 
+        // ===================================
+        // FIRST-PERSON CONTROL IMPLEMENTATION
+        // ===================================
+
+        function setupKeyboardControls() {
+            document.addEventListener('keydown', onKeyDown, false);
+            document.addEventListener('keyup', onKeyUp, false);
+        }
+
+        function onKeyDown(event) {
+            switch (event.code) {
+                case 'KeyW': moveForward = true; break;
+                case 'KeyA': moveLeft = true; break;
+                case 'KeyS': moveBackward = true; break;
+                case 'KeyD': moveRight = true; break;
+            }
+        }
+
+        function onKeyUp(event) {
+            switch (event.code) {
+                case 'KeyW': moveForward = false; break;
+                case 'KeyA': moveLeft = false; break;
+                case 'KeyS': moveBackward = false; break;
+                case 'KeyD': moveRight = false; break;
+            }
+        }
+        
+        function setupMouseLook() {
+            // Note: Since pointer lock might not work in all sandbox environments, 
+            // we attach mousemove to the entire document.
+            document.addEventListener('mousemove', onMouseMove, false);
+        }
+
+        function onMouseMove(event) {
+            // Horizontal rotation (Yaw) on the camera (x-axis)
+            yaw -= event.movementX * lookSensitivity;
+            camera.rotation.y = yaw; 
+
+            // Vertical rotation (Pitch) on the cameraPitch group
+            pitch -= event.movementY * lookSensitivity;
+            // Clamp the pitch rotation to prevent flipping the view
+            pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch));
+            cameraPitch.rotation.x = pitch;
+        }
+
+        // Movement update logic
+        function updateMovement(delta) {
+            const speed = 5.0; // Movement speed
+
+            // Dampen velocity for smooth stop
+            velocity.x -= velocity.x * 10.0 * delta;
+            velocity.z -= velocity.z * 10.0 * delta;
+            
+            // Set movement direction
+            direction.z = Number(moveForward) - Number(moveBackward);
+            direction.x = Number(moveRight) - Number(moveLeft);
+            direction.normalize(); 
+
+            // Apply acceleration
+            if (moveForward || moveBackward) velocity.z -= direction.z * speed * delta;
+            if (moveLeft || moveRight) velocity.x -= direction.x * speed * delta;
+
+            // Translate camera based on velocity
+            // Move camera forward/backward relative to its current rotation (yaw)
+            camera.translateX(velocity.x * delta);
+            camera.translateZ(velocity.z * delta);
+            
+            // Keep player on the ground (y=1.6)
+            camera.position.y = 1.6; 
+        }
+
         // 5. Animation Loop (Main Game Loop)
         function animate() {
             requestAnimationFrame(animate);
 
             const delta = clock.getDelta();
 
-            // Optional: Add a slight bobbing/breathing animation for the weapon
             if (isLoaded) {
+                // Update Movement
+                updateMovement(delta);
+
+                // Weapon Animation (Rotation and Bobbing)
                 const time = clock.getElapsedTime();
-                weaponGroup.position.y = Math.sin(time * 3) * 0.01;
-                weaponGroup.rotation.z = Math.sin(time * 2) * 0.005;
+                const modelScene = models[currentModelName];
+                
+                // Bobbing (up/down)
+                weaponGroup.position.y = Math.sin(time * 6) * 0.02;
+
+                // Subtle Weapon Rotation (Yaw, attached to cameraPitch)
+                // We rotate the model slightly within the weaponGroup, not the group itself
+                modelScene.rotation.y = Math.PI / 2 + 0.1 + Math.sin(time * 1.5) * 0.01;
             }
 
             renderer.render(scene, camera);
