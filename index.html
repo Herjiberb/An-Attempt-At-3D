@@ -47,7 +47,7 @@
         SPACE - Jump / Wall Jump<br>
         C - Slide / Crouch<br>
         L-CLICK - Attack/Mark Stone<br>
-        R-CLICK - Switch Weapon
+        R-CLICK - Switch Weapon / Toggle Night
     </div>
 
     <script type="importmap">
@@ -79,10 +79,13 @@
         const daySkyColor = 0x87CEEB;
         const nightSkyColor = 0x000000;
         const dayDirLightIntensity = 1.0;
-        const nightDirLightIntensity = 0.05; // Keep a little ambient light for scene visibility
+        const nightDirLightIntensity = 0.00; // Almost completely dark
+        const TORCH_LIGHT_INTENSITY = 10;
+        const TORCH_LIGHT_DISTANCE = 25;
+        
         let torchLight = null;
         let torchMesh = null;
-
+        window.isNight = false; // Global flag for night state
 
         // --- GAME STATE ---
         const state = {
@@ -98,7 +101,7 @@
         // --- SCENE SETUP ---
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(daySkyColor); // Sky
-        scene.fog = new THREE.Fog(daySkyColor, 10, 90);
+        scene.fog = new THREE.Fog(daySkyColor, 10, 90); // Default day fog
 
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
         const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -112,7 +115,6 @@
         const dirLight = new THREE.DirectionalLight(0xffffff, dayDirLightIntensity);
         dirLight.position.set(50, 100, 50);
         dirLight.castShadow = true;
-        // Configure shadow properties
         dirLight.shadow.mapSize.width = 2048;
         dirLight.shadow.mapSize.height = 2048;
         dirLight.shadow.camera.near = 10;
@@ -141,17 +143,50 @@
         const weapons = [];
         let currentWeaponIdx = -1;
 
+        // Toggles all night-specific visual effects
+        function toggleNightMode(isNight) {
+            window.isNight = isNight;
+            
+            // 1. Scene Lighting/Color/Fog
+            const targetColor = isNight ? nightSkyColor : daySkyColor;
+            dirLight.intensity = isNight ? nightDirLightIntensity : dayDirLightIntensity;
+
+            scene.background.set(targetColor);
+            scene.fog.color.set(targetColor);
+            
+            // Set fog density higher for night for limited visibility
+            scene.fog.near = isNight ? 1 : 10;
+            scene.fog.far = isNight ? 30 : 90;
+
+            // 2. Torch Light Management
+            if (isNight) {
+                if (!torchLight) {
+                    // Warm, bright light
+                    torchLight = new THREE.PointLight(0xffaa55, TORCH_LIGHT_INTENSITY, TORCH_LIGHT_DISTANCE, 1);
+                    torchLight.castShadow = true;
+                    // Attach to camera so it moves with the view
+                    camera.add(torchLight); 
+                    // Position light relative to the hand group position
+                    torchLight.position.set(0.5, -0.4, -1.0);
+                }
+                torchLight.visible = true;
+            } else {
+                if (torchLight) torchLight.visible = false;
+            }
+        }
+
+
         async function loadAssets() {
             try {
-                // Load Player (Invisible)
+                // 1. Load Player (Invisible)
                 const playerGltf = await loader.loadAsync('./Player.glb');
                 const pMesh = playerGltf.scene;
                 pMesh.visible = false;
                 playerBody.add(pMesh);
 
-                // Load Weapons
-                const files = ['BattleAxe.glb', 'Sword.glb', 'Pickaxe.glb'];
-                const names = ['Battle Axe', 'Sword', 'Pickaxe'];
+                // 2. Load Weapons including Torch.glb
+                const files = ['BattleAxe.glb', 'Sword.glb', 'Pickaxe.glb', 'Torch.glb'];
+                const names = ['Battle Axe', 'Sword', 'Pickaxe', 'Torch'];
                 
                 for(let i=0; i<files.length; i++) {
                     const gltf = await loader.loadAsync('./' + files[i]);
@@ -161,14 +196,21 @@
                         if (child.isMesh) child.castShadow = true;
                     });
                     
+                    // Adjust scales/rotations to look good in First Person
                     if(names[i] === 'Sword') {
                         w.scale.set(1.5, 1.5, 1.5);
                         w.rotation.set(0, Math.PI/2, 0); 
                     } else if (names[i] === 'Battle Axe') {
                         w.scale.set(2, 2, 2);
                         w.rotation.set(0, Math.PI, 0);
-                    } else {
+                    } else if (names[i] === 'Pickaxe') {
                         w.scale.set(2, 2, 2);
+                    } else if (names[i] === 'Torch') {
+                         // Position torch visually in the hand
+                         w.scale.set(1.5, 1.5, 1.5);
+                         w.rotation.set(-1.2, 0, 0); // Point slightly forward
+                         w.position.set(0.5, -0.5, 0);
+                         torchMesh = w; // Store reference to the torch mesh
                     }
                     
                     w.visible = false;
@@ -187,21 +229,34 @@
         loadAssets();
 
         function switchWeapon(idx) {
-            if(weapons.length === 0 || window.isNight) return; // Prevent switching if using torch
+            if(weapons.length === 0) return;
+
+            // Check if current weapon is the torch and we are switching away
+            if (currentWeaponIdx !== -1 && weapons[currentWeaponIdx].name === 'Torch') {
+                toggleNightMode(false);
+            }
+
             weapons.forEach(w => w.mesh.visible = false);
             
             if(idx === -1) idx = 0;
             currentWeaponIdx = idx % weapons.length;
             
-            weapons[currentWeaponIdx].mesh.visible = true;
-            document.getElementById('weapon-name').innerText = weapons[currentWeaponIdx].name;
-
-            handGroup.position.y = -0.8;
+            const newWeapon = weapons[currentWeaponIdx];
+            newWeapon.mesh.visible = true;
+            document.getElementById('weapon-name').innerText = newWeapon.name;
+            
+            // If new weapon is Torch, activate night mode
+            if (newWeapon.name === 'Torch') {
+                toggleNightMode(true);
+            } else {
+                handGroup.position.y = -0.8;
+            }
         }
 
         // --- TEXTURE AND MATERIAL SETUP ---
         const textureLoader = new THREE.TextureLoader();
         
+        // Load and configure Textures
         const stoneTexture = textureLoader.load('./Stone.jpg');
         stoneTexture.wrapS = stoneTexture.wrapT = THREE.RepeatWrapping;
         stoneTexture.repeat.set(5, 5); 
@@ -210,10 +265,8 @@
         grassTexture.wrapS = grassTexture.wrapT = THREE.RepeatWrapping;
         grassTexture.repeat.set(50, 50); 
         
-        // Broken stone texture for decals (now used as alpha map for 'slit' effect)
         const brokenStoneTexture = textureLoader.load('./BrokenStone.jpg');
         
-        // Mud texture
         const mudTexture = textureLoader.load('./Mud.jpg');
         mudTexture.wrapS = mudTexture.wrapT = THREE.RepeatWrapping;
 
@@ -221,7 +274,7 @@
         const stoneMat = new THREE.MeshStandardMaterial({ map: stoneTexture, roughness: 0.7, metalness: 0.1 });
         const terrainMat = new THREE.MeshStandardMaterial({ map: grassTexture });
         
-        // Decal Material (for impact marks/slits)
+        // Decal Material (for impact marks - reverted to standard projection)
         const brokenDecalMat = new THREE.MeshStandardMaterial({
             map: brokenStoneTexture,
             transparent: true,
@@ -230,9 +283,8 @@
             polygonOffset: true,
             polygonOffsetFactor: -4, 
             roughness: 0.9,
-            // You can use brokenStoneTexture as an alphaMap if the original PNG has transparency defined,
-            // or if you intend for the white areas of the JPG to be opaque and black areas transparent.
-            // Since we're using geometry to create the 'slit' shape, the map itself can remain simple.
+            // To approximate rounded/chipped corners, a specific alpha map would be ideal.
+            // Since we don't have one, we rely on the small size and the texture itself.
         });
 
         // Mud Material (for puddles)
@@ -309,10 +361,8 @@
                 const x = cx + Math.cos(angle) * radius;
                 const z = cz + Math.sin(angle) * radius;
                 
-                // Tall pillar
                 const pillar = createBlock(x, z, 2, 8 + Math.random()*4, 2);
 
-                // Lintel (connecting top)
                 if(Math.random() > 0.5) {
                     const nextAngle = ((i+1) / count) * Math.PI * 2;
                     const nx = cx + Math.cos(nextAngle) * radius;
@@ -327,21 +377,19 @@
                 }
             }
             
-            // Center jumping block
             createBlock(cx, cz, 4, 3, 4);
         }
 
         function generateMudPuddles(count) {
             const range = 150;
             const puddleRadius = 3.5;
-            const segments = 16; // Use higher segments for smoothness
+            const segments = 16;
 
             for (let i = 0; i < count; i++) {
                 const x = (Math.random() - 0.5) * range;
                 const z = (Math.random() - 0.5) * range;
                 const centerPos = new THREE.Vector3(x, 0, z);
 
-                // Use a dense CircleGeometry for vertex manipulation
                 const puddleGeo = new THREE.CircleGeometry(puddleRadius, segments);
                 puddleGeo.rotateX(-Math.PI / 2);
                 
@@ -349,15 +397,12 @@
                 const vertexCount = posAttr.count;
 
                 for (let j = 0; j < vertexCount; j++) {
-                    // Calculate world X and Z for this vertex
                     const vx = posAttr.getX(j) + centerPos.x;
                     const vz = posAttr.getZ(j) + centerPos.z;
                     
-                    // Sample the noise function for the height
                     let vy = getRawTerrainY(vx, vz); 
                     
-                    // Set the Y position of the vertex relative to the mesh's center Y (0)
-                    posAttr.setY(j, vy - centerPos.y + 0.01); 
+                    posAttr.setY(j, vy - centerPos.y + 0.01); // 0.01 is epsilon to avoid z-fighting
                 }
                 
                 puddleGeo.computeVertexNormals();
@@ -374,73 +419,10 @@
         generateStonehenge(50, 50);
         generateStonehenge(-50, 40);
         generateMudPuddles(30); 
-
-        // --- NIGHT MODE LOGIC ---
-        window.setNightMode = (isNight) => {
-            if (typeof isNight !== 'boolean') return;
-            window.isNight = isNight;
-            
-            // 1. Scene Lighting/Color
-            const targetIntensity = isNight ? nightDirLightIntensity : dayDirLightIntensity;
-            const targetColor = isNight ? nightSkyColor : daySkyColor;
-            
-            // Smoother transition for visuals
-            new THREE.Color(scene.background.getHex()).lerp(new THREE.Color(targetColor), 1.0);
-            scene.background.set(targetColor);
-            scene.fog.color.set(targetColor);
-            dirLight.intensity = targetIntensity;
-
-            // 2. Torch Logic
-            if (isNight) {
-                // Hide current weapon
-                if (currentWeaponIdx !== -1) weapons[currentWeaponIdx].mesh.visible = false;
-
-                // Add Point Light for local illumination
-                if (!torchLight) {
-                    torchLight = new THREE.PointLight(0xffaa55, 10, 25, 1);
-                    torchLight.castShadow = true;
-                    camera.add(torchLight); 
-                    torchLight.position.set(0.5, -0.4, -1.0);
-                }
-                torchLight.visible = true;
-
-                // Mock torch model (assuming Torch.glb couldn't be loaded)
-                if (!torchMesh) {
-                     const torchGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.8, 8);
-                     const torchMat = new THREE.MeshStandardMaterial({color: 0x333333});
-                     torchMesh = new THREE.Mesh(torchGeo, torchMat);
-                     handGroup.add(torchMesh);
-                     torchMesh.castShadow = true;
-                     torchMesh.position.set(0.5, -0.5, 0);
-                     torchMesh.rotation.z = Math.PI / 4;
-                }
-                torchMesh.visible = true;
-                document.getElementById('weapon-name').innerText = "TORCH";
-
-            } else {
-                // Day mode
-                if (torchLight) torchLight.visible = false;
-                if (torchMesh) torchMesh.visible = false;
-
-                // Restore current weapon visibility
-                if (currentWeaponIdx !== -1) {
-                    weapons[currentWeaponIdx].mesh.visible = true;
-                    document.getElementById('weapon-name').innerText = weapons[currentWeaponIdx].name;
-                } else {
-                    document.getElementById('weapon-name').innerText = "FISTS";
-                }
-            }
-        };
-
-        // Expose to window for console use
-        window.isNight = false; // Initial state
-        window.setNightMode = window.setNightMode; // Expose the function
         
         // --- INPUTS ---
         const keys = { w:false, a:false, s:false, d:false, space:false, shift:false, c:false };
         
-        // ... (Input handlers remain the same) ...
-
         document.body.addEventListener('click', (e) => {
             if(document.pointerLockElement !== document.body) {
                 document.body.requestPointerLock();
@@ -478,31 +460,16 @@
         // --- PHYSICS & LOGIC ---
         let isAttacking = false;
         
-        // Helper function to create and time the removal of a decal (the "slit")
+        // Creates a standard square decal that looks like a chip
         function createDecal(hit) {
             const object = hit.object;
             const position = hit.point.clone();
             const orientation = new THREE.Euler().setFromQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), hit.face.normal));
             
-            // Decal size (small slit/chip)
+            // Revert to simple square projection for the decal (small chip)
             const randomSize = 0.5 + Math.random() * 0.2; 
-            const size = new THREE.Vector3(randomSize, randomSize, randomSize); 
-
-            // Make it a "slit" by distorting the projection box based on the normal
-            const normal = hit.face.normal;
-            if (Math.abs(normal.x) > 0.9) { // Hitting side (X-face)
-                size.x = 0.05; // Thin along the normal axis
-                size.y = randomSize * 2;
-                size.z = randomSize * 2;
-            } else if (Math.abs(normal.y) > 0.9) { // Hitting top/bottom (Y-face)
-                size.y = 0.05;
-                size.x = randomSize * 2;
-                size.z = randomSize * 2;
-            } else if (Math.abs(normal.z) > 0.9) { // Hitting front/back (Z-face)
-                size.z = 0.05;
-                size.x = randomSize * 2;
-                size.y = randomSize * 2;
-            }
+            // Use a thin projection cube (0.1 depth) to avoid clipping through the object
+            const size = new THREE.Vector3(randomSize * 2, randomSize * 2, 0.1); 
             
             const decalGeometry = new DecalGeometry(object, position, orientation, size);
             const decal = new THREE.Mesh(decalGeometry, brokenDecalMat);
@@ -517,7 +484,8 @@
         }
 
         function attack() {
-            if(isAttacking) return;
+            // Disable attack if holding torch (no swinging)
+            if(isAttacking || window.isNight) return;
             isAttacking = true;
 
             // 1. Raycast for stone marking
@@ -691,14 +659,19 @@
 
             // Weapon/Torch Sway
             const time = clock.getElapsedTime();
-            if(!isAttacking) {
+            
+            // Only sway if not attacking (and not holding the torch, which should be steady)
+            if(!isAttacking && !window.isNight) { 
                 handGroup.position.y = -0.4 + Math.sin(time * 2) * 0.02;
                 handGroup.position.x = 0.5 + Math.cos(time * 1.5) * 0.02;
+                if((keys.w||keys.a||keys.s||keys.d) && state.onGround) {
+                    handGroup.position.y += Math.sin(time * 15) * 0.05;
+                }
+            } else if (window.isNight && torchMesh) {
+                 // Simple bob for torch
+                 torchMesh.rotation.x = -1.2 + Math.sin(time * 3) * 0.05;
             }
-            if((keys.w||keys.a||keys.s||keys.d) && state.onGround) {
-                handGroup.position.y += Math.sin(time * 15) * 0.05;
-            }
-            
+
             // "Lerp" weapon back to position after attack
             if(!isAttacking) {
                handGroup.rotation.x = THREE.MathUtils.lerp(handGroup.rotation.x, 0, 0.1);
