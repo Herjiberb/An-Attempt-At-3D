@@ -46,7 +46,7 @@
         SHIFT - Sprint (Hold)<br>
         SPACE - Jump / Wall Jump<br>
         C - Slide / Crouch<br>
-        L-CLICK - Attack<br>
+        L-CLICK - Attack/Break Stone<br>
         R-CLICK - Switch Weapon
     </div>
 
@@ -71,6 +71,8 @@
         const JUMP_FORCE = 18;
         const GRAVITY = 40;
         const WALL_JUMP_FORCE = 25;
+        const PLAYER_HALF_HEIGHT = 0.85; // Player stands at 1.7 height
+        const STEP_HEIGHT = 0.5; // Max height player can step up
         
         // --- GAME STATE ---
         const state = {
@@ -100,7 +102,7 @@
         const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
         dirLight.position.set(50, 100, 50);
         dirLight.castShadow = true;
-        // Configure shadow properties for better quality
+        // Configure shadow properties
         dirLight.shadow.mapSize.width = 2048;
         dirLight.shadow.mapSize.height = 2048;
         dirLight.shadow.camera.near = 10;
@@ -112,11 +114,9 @@
         scene.add(dirLight);
 
         // --- PLAYER CONTROLLER OBJECTS ---
-        // In FPS, the "Player" is just a capsule/point. The camera sits on top.
         const playerBody = new THREE.Group();
         scene.add(playerBody);
         
-        // Attach camera to player body
         playerBody.add(camera);
         camera.position.y = state.cameraHeight;
 
@@ -136,7 +136,7 @@
                 // 1. Load Player (Invisible, just for "presence" logic if needed later)
                 const playerGltf = await loader.loadAsync('./Player.glb');
                 const pMesh = playerGltf.scene;
-                pMesh.visible = false; // "Rendered completely out of view"
+                pMesh.visible = false;
                 playerBody.add(pMesh);
 
                 // 2. Load Weapons
@@ -147,8 +147,14 @@
                     const gltf = await loader.loadAsync('./' + files[i]);
                     const w = gltf.scene;
                     
+                    // Make the tool/weapon cast a shadow
+                    w.traverse(child => {
+                        if (child.isMesh) {
+                            child.castShadow = true;
+                        }
+                    });
+
                     // Adjust scales/rotations to look good in First Person
-                    // These numbers are tweaked for standard FPS view
                     if(names[i] === 'Sword') {
                         w.scale.set(1.5, 1.5, 1.5);
                         w.rotation.set(0, Math.PI/2, 0); 
@@ -176,7 +182,6 @@
 
         function switchWeapon(idx) {
             if(weapons.length === 0) return;
-            // Hide all
             weapons.forEach(w => w.mesh.visible = false);
             
             if(idx === -1) idx = 0;
@@ -185,7 +190,6 @@
             weapons[currentWeaponIdx].mesh.visible = true;
             document.getElementById('weapon-name').innerText = weapons[currentWeaponIdx].name;
 
-            // Little "equip" pop animation
             handGroup.position.y = -0.8;
         }
 
@@ -195,16 +199,23 @@
         // Load and configure Stone Texture
         const stoneTexture = textureLoader.load('./Stone.jpg');
         stoneTexture.wrapS = stoneTexture.wrapT = THREE.RepeatWrapping;
-        stoneTexture.repeat.set(5, 5); // Repeat 5 times
+        stoneTexture.repeat.set(5, 5); 
         
         // Load and configure Grass Texture
         const grassTexture = textureLoader.load('./Grass.jpg');
         grassTexture.wrapS = grassTexture.wrapT = THREE.RepeatWrapping;
-        grassTexture.repeat.set(50, 50); // Repeat across large terrain
-
-        // Material for blocks (now uses stone texture)
-        const stoneMat = new THREE.MeshStandardMaterial({ map: stoneTexture, roughness: 0.7, metalness: 0.1 });
+        grassTexture.repeat.set(50, 50); 
         
+        // Load and configure Broken Stone Texture
+        const brokenStoneTexture = textureLoader.load('./BrokenStone.jpg');
+        brokenStoneTexture.wrapS = brokenStoneTexture.wrapT = THREE.RepeatWrapping;
+        brokenStoneTexture.repeat.set(1, 1); 
+
+        // Materials
+        const stoneMat = new THREE.MeshStandardMaterial({ map: stoneTexture, roughness: 0.7, metalness: 0.1 });
+        const terrainMat = new THREE.MeshStandardMaterial({ map: grassTexture });
+        const brokenMat = new THREE.MeshStandardMaterial({ map: brokenStoneTexture, roughness: 0.9, metalness: 0.1 });
+
         // Helper noise function
         function noise(x, z) {
             return (Math.sin(x * 0.05 + SEED) + Math.cos(z * 0.05 + SEED)) * 2;
@@ -216,14 +227,11 @@
         for(let i=0; i<posAttr.count; i++) {
             const x = posAttr.getX(i);
             const z = posAttr.getZ(i);
-            let y = noise(x, z) * 2; // Low rolling hills
-            if(y < -2) y = -2; // Water level flat
+            let y = noise(x, z) * 2;
+            if(y < -2) y = -2;
             posAttr.setY(i, y);
         }
         worldGeo.computeVertexNormals();
-        
-        // Terrain Material (now uses grass texture)
-        const terrainMat = new THREE.MeshStandardMaterial({ map: grassTexture });
         
         const terrain = new THREE.Mesh(worldGeo, terrainMat);
         terrain.receiveShadow = true;
@@ -232,7 +240,14 @@
         // Parkour Obstacles Array (for collision detection)
         const obstacles = [];
 
-        function createBlock(x, z, w, h, d) {
+        // Helper to get terrain height only
+        function getRawTerrainY(x, z) {
+            let terrainY = noise(x, z) * 2;
+            if(terrainY < -2) terrainY = -2;
+            return terrainY;
+        }
+
+        function createBlock(x, z, w, h, d, isBreakable = true) {
             const geo = new THREE.BoxGeometry(w, h, d);
             
             // Texture mapping: scale texture repetition based on block size
@@ -241,47 +256,31 @@
             const repeatZ = d / 5;
             
             const uvs = geo.attributes.uv.array;
-            // Iterate over each face's UVs (8 vertices per face * 3 components = 24 total)
             for (let i = 0; i < uvs.length; i += 2) {
-                // Front and Back faces (using x/y -> scale by w/h)
-                if (i >= 0 && i < 8) { // Front face
-                    uvs[i] *= repeatX; uvs[i+1] *= repeatY;
-                } else if (i >= 8 && i < 16) { // Back face
-                    uvs[i] *= repeatX; uvs[i+1] *= repeatY;
-                }
-                // Top and Bottom faces (using x/z -> scale by w/d)
-                else if (i >= 16 && i < 24) { // Top face
-                    uvs[i] *= repeatX; uvs[i+1] *= repeatZ;
-                } else if (i >= 24 && i < 32) { // Bottom face
-                    uvs[i] *= repeatX; uvs[i+1] *= repeatZ;
-                }
-                // Right and Left faces (using z/y -> scale by d/h)
-                else if (i >= 32 && i < 40) { // Right face
-                    uvs[i] *= repeatZ; uvs[i+1] *= repeatY;
-                } else if (i >= 40 && i < 48) { // Left face
-                    uvs[i] *= repeatZ; uvs[i+1] *= repeatY;
-                }
+                uvs[i] *= repeatX; 
+                uvs[i+1] *= repeatY; 
             }
             geo.attributes.uv.needsUpdate = true;
             
-            const mesh = new THREE.Mesh(geo, stoneMat);
+            const mesh = new THREE.Mesh(geo, stoneMat.clone()); // Use clone to allow material swapping
             
-            // Get terrain height at block center for proper placement
-            const terrainBaseY = getTerrainY(x, z); 
-            let y = terrainBaseY;
-            
-            mesh.position.set(x, y + h/2, z); // Center position is base + half height
+            // Proper placement: base is on the terrain
+            const terrainBaseY = getRawTerrainY(x, z); 
+            mesh.position.set(x, terrainBaseY + h/2, z); 
             mesh.castShadow = true;
             mesh.receiveShadow = true;
             scene.add(mesh);
             obstacles.push(mesh);
             
-            // Add bounding box for physics
+            // Add bounding box for physics and game properties
             mesh.userData.box = new THREE.Box3().setFromObject(mesh);
+            mesh.userData.health = isBreakable ? 3 : Infinity;
+            mesh.userData.isBreakable = isBreakable;
+            mesh.userData.originalMat = stoneMat; // Store original for reference
+            return mesh;
         }
 
         function generateStonehenge(cx, cz) {
-            // Circle of pillars
             const radius = 15;
             const count = 8;
             for(let i=0; i<count; i++) {
@@ -292,7 +291,7 @@
                 // Tall pillar
                 createBlock(x, z, 2, 8 + Math.random()*4, 2);
                 
-                // Lintel (connecting top) if lucky
+                // Lintel (connecting top)
                 if(Math.random() > 0.5) {
                     const nextAngle = ((i+1) / count) * Math.PI * 2;
                     const nx = cx + Math.cos(nextAngle) * radius;
@@ -301,36 +300,11 @@
                     const midZ = (z + nz) / 2;
                     
                     const blockHeight = 1;
-                    const terrainBaseY = getTerrainY(midX, midZ);
-
-                    // Create bridge geometry manually to control texture mapping for length
-                    const bridgeGeo = new THREE.BoxGeometry(2, 1, 10);
-                    // The long side of the bridge is the Z-axis (length 10)
-                    // We need to scale the UVs for the top/bottom faces to repeat 10/5 = 2 times
-                    const uvs = bridgeGeo.attributes.uv.array;
-                    // Top/Bottom faces (uses X/Z)
-                    for (let i = 16; i < 32; i += 2) { 
-                        uvs[i] *= (2 / 5); // X scale (width)
-                        uvs[i+1] *= (10 / 5); // Z scale (length)
-                    }
-                    // Right/Left faces (uses Z/Y)
-                    for (let i = 32; i < 48; i += 2) { 
-                        uvs[i] *= (10 / 5); // Z scale (length)
-                        uvs[i+1] *= (1 / 5); // Y scale (height)
-                    }
-                    bridgeGeo.attributes.uv.needsUpdate = true;
-
-
-                    const bridge = new THREE.Mesh(bridgeGeo, stoneMat);
-                    bridge.position.set(midX, terrainBaseY + 10 + blockHeight/2, midZ); // Base Y + 10 + half height
+                    const terrainBaseY = getRawTerrainY(midX, midZ);
+                    
+                    const bridge = createBlock(midX, midZ, 2, blockHeight, 10);
+                    bridge.position.y = terrainBaseY + 10 + blockHeight/2;
                     bridge.lookAt(x, bridge.position.y, z);
-                    
-                    bridge.castShadow = true;
-                    bridge.receiveShadow = true;
-                    
-                    scene.add(bridge);
-                    obstacles.push(bridge);
-                    bridge.userData.box = new THREE.Box3().setFromObject(bridge);
                 }
             }
             
@@ -383,17 +357,50 @@
 
         // --- PHYSICS & LOGIC ---
         let isAttacking = false;
+        
+        function destroyBlock(mesh) {
+            scene.remove(mesh);
+            mesh.geometry.dispose();
+            mesh.material.dispose();
+            const index = obstacles.indexOf(mesh);
+            if (index > -1) obstacles.splice(index, 1);
+        }
+        
         function attack() {
             if(isAttacking) return;
             isAttacking = true;
-            // Procedural recoil/stab
+
+            // 1. Raycast for block breaking
+            const raycaster = new THREE.Raycaster();
+            const center = new THREE.Vector2(0, 0);
+            raycaster.setFromCamera(center, camera);
+            raycaster.far = 5; // Break range
+            
+            const hits = raycaster.intersectObjects(obstacles);
+            if (hits.length > 0) {
+                const block = hits[0].object;
+                if (block.userData.isBreakable && block.userData.health > 0) {
+                    block.userData.health--;
+                    
+                    if (block.userData.health === 0) {
+                        // Final hit: change to broken texture and remove after a small delay
+                        block.material = brokenMat;
+                        setTimeout(() => destroyBlock(block), 200);
+                    } else {
+                        // Intermediate hit: visual feedback (quick flash)
+                        block.material.emissive.setHex(0xFF0000);
+                        setTimeout(() => block.material.emissive.setHex(0x000000), 50);
+                    }
+                }
+            }
+
+            // 2. Weapon animation
             const startZ = handGroup.position.z;
             const startRot = handGroup.rotation.x;
             
             let t = 0;
             const anim = setInterval(() => {
                 t += 0.2;
-                // Stab forward and rotate down
                 handGroup.position.z = startZ - Math.sin(t) * 0.5; 
                 handGroup.rotation.x = startRot - Math.sin(t) * 0.5;
                 
@@ -411,11 +418,9 @@
             if(state.onGround) {
                 state.velocity.y = JUMP_FORCE;
             } 
-            // Wall Jump
+            // Wall Jump logic remains
             else if (checkForWall()) {
                 state.velocity.y = WALL_JUMP_FORCE;
-                // Push back from wall (simple bounce logic)
-                // In a real engine we'd use the wall normal, here we just push opposite to view
                 const viewDir = new THREE.Vector3();
                 camera.getWorldDirection(viewDir);
                 state.velocity.x = -viewDir.x * 20;
@@ -426,35 +431,57 @@
         const raycaster = new THREE.Raycaster();
         
         function checkForWall() {
-            // Raycast in front of player
             const dir = new THREE.Vector3();
             camera.getWorldDirection(dir);
             raycaster.set(playerBody.position, dir);
-            raycaster.far = 2.0; // Close range
+            raycaster.far = 2.0; 
             const hits = raycaster.intersectObjects(obstacles);
             return hits.length > 0;
         }
 
-        // Modified getTerrainY to check blocks and terrain height
-        function getTerrainY(x, z) {
-            // Get terrain height from noise function (used to define the landscape)
-            let terrainY = noise(x, z) * 2;
-            if(terrainY < -2) terrainY = -2; // Water level flat
+        // Modified function to find actual ground height
+        function getActualGroundY(x, z) {
+            let groundY = getRawTerrainY(x, z); 
             
-            // Check blocks/obstacles
-            let maxY = terrainY; // Start with the landscape height
-            
-            // Note: This AABB check is simple and might fail for rotated/complex obstacles.
-            // A more robust solution would involve raycasting down from the player.
             for(let ob of obstacles) {
                 const box = ob.userData.box;
+                // Only consider blocks that the player is above or near the top of
+                // and whose XZ position overlaps with the player
                 if(x >= box.min.x && x <= box.max.x && z >= box.min.z && z <= box.max.z) {
-                    if(box.max.y > maxY) maxY = box.max.y;
+                    // Check if the player is currently below the top of the block
+                    // and can actually land on it, preventing teleporting up from underneath.
+                    if (playerBody.position.y < box.max.y + PLAYER_HALF_HEIGHT + 0.1) {
+                         // Only consider it 'ground' if the block is below the player
+                        if(box.max.y > groundY && box.max.y <= playerBody.position.y + 0.1) {
+                            groundY = box.max.y;
+                        }
+                    }
                 }
             }
-            
-            return maxY;
+            return groundY;
         }
+        
+        // Horizontal Collision Check (New/Simplified)
+        function checkHorizontalCollision(currentPos, newPos, radius) {
+            const nextBox = new THREE.Box3(
+                new THREE.Vector3(newPos.x - radius, newPos.y - PLAYER_HALF_HEIGHT, newPos.z - radius),
+                new THREE.Vector3(newPos.x + radius, newPos.y + PLAYER_HALF_HEIGHT, newPos.z + radius)
+            );
+            
+            for (let ob of obstacles) {
+                const obBox = ob.userData.box;
+                
+                // Simplified AABB test. Check if the player is near the block vertically
+                if (nextBox.intersectsBox(obBox)) {
+                     // Check if player is *actually* hitting the side, not just standing on top of it
+                     if (currentPos.y < obBox.max.y) {
+                        return true;
+                     }
+                }
+            }
+            return false;
+        }
+
 
         const clock = new THREE.Clock();
 
@@ -470,18 +497,17 @@
             }
             document.getElementById('stamina-bar').style.width = state.stamina + '%';
 
-            // 2. Speed Calculation
+            // 2. Speed Calculation and Crouch/Slide
             let speed = MOVESPEED;
             if(keys.shift && state.stamina > 0) speed = SPRINT_SPEED;
-            if(keys.c) { // Sliding/Crouch
-                state.cameraHeight = THREE.MathUtils.lerp(state.cameraHeight, 0.8, 0.2); // Duck
-                if(speed > MOVESPEED) speed += 5; // Slide boost
+            if(keys.c) { 
+                state.cameraHeight = THREE.MathUtils.lerp(state.cameraHeight, 0.8, 0.2); 
+                if(speed > MOVESPEED) speed += 5; 
             } else {
-                state.cameraHeight = THREE.MathUtils.lerp(state.cameraHeight, 1.7, 0.2); // Stand
+                state.cameraHeight = THREE.MathUtils.lerp(state.cameraHeight, 1.7, 0.2); 
             }
-            // camera.position.y is updated below with a clamp
 
-            // 3. Movement
+            // 3. Movement Input
             const forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0,1,0), playerBody.rotation.y);
             const right = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0,1,0), playerBody.rotation.y);
             
@@ -499,38 +525,56 @@
 
             // Gravity
             state.velocity.y -= GRAVITY * delta;
+            
+            const originalPos = playerBody.position.clone();
+            let newX = originalPos.x + state.velocity.x * delta;
+            let newZ = originalPos.z + state.velocity.z * delta;
 
-            // Apply Position
-            playerBody.position.x += state.velocity.x * delta;
-            playerBody.position.z += state.velocity.z * delta;
+            // 4. Horizontal Collision Check (prevents clipping through walls/blocks)
+            const playerRadius = 0.5; // Arbitrary small radius for player
+            
+            // Check X movement
+            const checkXPos = new THREE.Vector3(newX, originalPos.y, originalPos.z);
+            if (!checkHorizontalCollision(originalPos, checkXPos, playerRadius)) {
+                playerBody.position.x = newX;
+            } else {
+                state.velocity.x = 0; // Stop X movement on hit
+            }
+            
+            // Check Z movement
+            const checkZPos = new THREE.Vector3(playerBody.position.x, originalPos.y, newZ);
+            if (!checkHorizontalCollision(originalPos, checkZPos, playerRadius)) {
+                playerBody.position.z = newZ;
+            } else {
+                state.velocity.z = 0; // Stop Z movement on hit
+            }
+
+            // 5. Vertical Movement
             playerBody.position.y += state.velocity.y * delta;
 
-            // 4. Collision (Ground)
-            const groundH = getTerrainY(playerBody.position.x, playerBody.position.z);
-            if(playerBody.position.y < groundH) {
-                playerBody.position.y = groundH;
+            // 6. Vertical Collision (Ground)
+            // Use player's base Y (center minus half height) for collision check
+            const playerBaseY = playerBody.position.y - PLAYER_HALF_HEIGHT;
+            const groundH = getActualGroundY(playerBody.position.x, playerBody.position.z);
+            
+            if(playerBaseY < groundH) {
+                playerBody.position.y = groundH + PLAYER_HALF_HEIGHT; // Set player center Y
                 state.velocity.y = 0;
                 state.onGround = true;
             } else {
                 state.onGround = false;
             }
 
-            // **NEW: Prevent view from sinking below ground**
-            // The camera position is relative to the playerBody, so we only update the camera's Y position
-            // to reflect the crouch/stand state, but we ensure it's always >= the required minimum height
-            camera.position.y = Math.max(
-                state.cameraHeight, // Target height (1.7 or 0.8)
-                (playerBody.position.y - groundH) + 0.1 // Minimum height above ground/block collision point
-            );
-
-
-            // Weapon Sway (Idle)
+            // 7. Prevent View Sinking (Camera position clamp)
+            // The camera position is relative to playerBody, so we only update the camera's Y position
+            camera.position.y = state.cameraHeight;
+            
+            // Weapon Sway (Idle/Run)
             const time = clock.getElapsedTime();
             if(!isAttacking) {
                 handGroup.position.y = -0.4 + Math.sin(time * 2) * 0.02;
                 handGroup.position.x = 0.5 + Math.cos(time * 1.5) * 0.02;
             }
-            // Weapon Run Sway
             if((keys.w||keys.a||keys.s||keys.d) && state.onGround) {
                 handGroup.position.y += Math.sin(time * 15) * 0.05;
             }
