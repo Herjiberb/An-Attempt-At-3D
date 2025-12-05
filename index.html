@@ -66,16 +66,24 @@
 
         // --- CONFIGURATION ---
         const SEED = 888;
-        const CHUNK_SIZE = 100;
         const MOVESPEED = 12;
         const SPRINT_SPEED = 22;
         const JUMP_FORCE = 18;
         const GRAVITY = 40;
         const WALL_JUMP_FORCE = 25;
-        const PLAYER_HALF_HEIGHT = 0.85; // Player stands at 1.7 height
-        const PLAYER_RADIUS = 0.5; // Arbitrary radius for horizontal collision
+        const PLAYER_HALF_HEIGHT = 0.85; 
+        const PLAYER_RADIUS = 0.5; 
         const DECAL_FADE_TIME = 15000; // 15 seconds in milliseconds
         
+        // --- NIGHT MODE CONFIG ---
+        const daySkyColor = 0x87CEEB;
+        const nightSkyColor = 0x000000;
+        const dayDirLightIntensity = 1.0;
+        const nightDirLightIntensity = 0.05; // Keep a little ambient light for scene visibility
+        let torchLight = null;
+        let torchMesh = null;
+
+
         // --- GAME STATE ---
         const state = {
             stamina: 100,
@@ -89,19 +97,19 @@
 
         // --- SCENE SETUP ---
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x87CEEB); // Sky
-        scene.fog = new THREE.Fog(0x87CEEB, 10, 90);
+        scene.background = new THREE.Color(daySkyColor); // Sky
+        scene.fog = new THREE.Fog(daySkyColor, 10, 90);
 
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.shadowMap.enabled = true; // Shadows enabled
+        renderer.shadowMap.enabled = true; 
         document.body.appendChild(renderer.domElement);
 
         // Lighting
         const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.0);
         scene.add(hemiLight);
-        const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+        const dirLight = new THREE.DirectionalLight(0xffffff, dayDirLightIntensity);
         dirLight.position.set(50, 100, 50);
         dirLight.castShadow = true;
         // Configure shadow properties
@@ -135,11 +143,13 @@
 
         async function loadAssets() {
             try {
+                // Load Player (Invisible)
                 const playerGltf = await loader.loadAsync('./Player.glb');
                 const pMesh = playerGltf.scene;
                 pMesh.visible = false;
                 playerBody.add(pMesh);
 
+                // Load Weapons
                 const files = ['BattleAxe.glb', 'Sword.glb', 'Pickaxe.glb'];
                 const names = ['Battle Axe', 'Sword', 'Pickaxe'];
                 
@@ -147,14 +157,10 @@
                     const gltf = await loader.loadAsync('./' + files[i]);
                     const w = gltf.scene;
                     
-                    // Make the tool/weapon cast a shadow
                     w.traverse(child => {
-                        if (child.isMesh) {
-                            child.castShadow = true;
-                        }
+                        if (child.isMesh) child.castShadow = true;
                     });
-
-                    // Adjust scales/rotations to look good in First Person
+                    
                     if(names[i] === 'Sword') {
                         w.scale.set(1.5, 1.5, 1.5);
                         w.rotation.set(0, Math.PI/2, 0); 
@@ -174,14 +180,14 @@
                 document.getElementById('loading').style.display = 'none';
 
             } catch (e) {
-                console.error(e);
+                console.error("Asset load error:", e);
                 document.getElementById('loading').innerText = "Asset Error";
             }
         }
         loadAssets();
 
         function switchWeapon(idx) {
-            if(weapons.length === 0) return;
+            if(weapons.length === 0 || window.isNight) return; // Prevent switching if using torch
             weapons.forEach(w => w.mesh.visible = false);
             
             if(idx === -1) idx = 0;
@@ -193,10 +199,9 @@
             handGroup.position.y = -0.8;
         }
 
-        // --- TERRAIN & STONEHENGE GENERATION ---
+        // --- TEXTURE AND MATERIAL SETUP ---
         const textureLoader = new THREE.TextureLoader();
         
-        // Load and configure Textures
         const stoneTexture = textureLoader.load('./Stone.jpg');
         stoneTexture.wrapS = stoneTexture.wrapT = THREE.RepeatWrapping;
         stoneTexture.repeat.set(5, 5); 
@@ -205,9 +210,10 @@
         grassTexture.wrapS = grassTexture.wrapT = THREE.RepeatWrapping;
         grassTexture.repeat.set(50, 50); 
         
+        // Broken stone texture for decals (now used as alpha map for 'slit' effect)
         const brokenStoneTexture = textureLoader.load('./BrokenStone.jpg');
-        brokenStoneTexture.wrapS = brokenStoneTexture.wrapT = THREE.RepeatWrapping;
         
+        // Mud texture
         const mudTexture = textureLoader.load('./Mud.jpg');
         mudTexture.wrapS = mudTexture.wrapT = THREE.RepeatWrapping;
 
@@ -215,15 +221,18 @@
         const stoneMat = new THREE.MeshStandardMaterial({ map: stoneTexture, roughness: 0.7, metalness: 0.1 });
         const terrainMat = new THREE.MeshStandardMaterial({ map: grassTexture });
         
-        // Decal Material (for impact marks)
+        // Decal Material (for impact marks/slits)
         const brokenDecalMat = new THREE.MeshStandardMaterial({
             map: brokenStoneTexture,
             transparent: true,
             depthTest: true,
             depthWrite: false,
             polygonOffset: true,
-            polygonOffsetFactor: -4, // Push decal slightly in front of object
+            polygonOffsetFactor: -4, 
             roughness: 0.9,
+            // You can use brokenStoneTexture as an alphaMap if the original PNG has transparency defined,
+            // or if you intend for the white areas of the JPG to be opaque and black areas transparent.
+            // Since we're using geometry to create the 'slit' shape, the map itself can remain simple.
         });
 
         // Mud Material (for puddles)
@@ -236,9 +245,15 @@
         });
 
 
-        // Helper noise function
+        // --- TERRAIN GENERATION HELPERS ---
         function noise(x, z) {
             return (Math.sin(x * 0.05 + SEED) + Math.cos(z * 0.05 + SEED)) * 2;
+        }
+
+        function getRawTerrainY(x, z) {
+            let terrainY = noise(x, z) * 2;
+            if(terrainY < -2) terrainY = -2;
+            return terrainY;
         }
 
         // 1. Setup Terrain Mesh
@@ -248,8 +263,7 @@
         for(let i=0; i<posAttr.count; i++) {
             const x = posAttr.getX(i);
             const z = posAttr.getZ(i);
-            let y = noise(x, z) * 2;
-            if(y < -2) y = -2;
+            let y = getRawTerrainY(x, z);
             posAttr.setY(i, y);
         }
         worldGeo.computeVertexNormals();
@@ -261,23 +275,12 @@
         // Parkour Obstacles Array (for collision detection)
         const obstacles = [];
 
-        // Helper to get terrain height only
-        function getRawTerrainY(x, z) {
-            let terrainY = noise(x, z) * 2;
-            if(terrainY < -2) terrainY = -2;
-            return terrainY;
-        }
-
         function createBlock(x, z, w, h, d) {
             const geo = new THREE.BoxGeometry(w, h, d);
-            
-            // Texture mapping: scale texture repetition based on block size
             const repeatX = w / 5; 
             const repeatY = h / 5;
-            const repeatZ = d / 5;
             
             const uvs = geo.attributes.uv.array;
-            // Simplified UV setup for infinite wrap look (applied to all faces)
             for (let i = 0; i < uvs.length; i += 2) {
                 uvs[i] *= repeatX; 
                 uvs[i+1] *= repeatY; 
@@ -286,7 +289,6 @@
             
             const mesh = new THREE.Mesh(geo, stoneMat.clone()); 
             
-            // Proper placement: base is on the terrain
             const terrainBaseY = getRawTerrainY(x, z); 
             mesh.position.set(x, terrainBaseY + h/2, z); 
             mesh.castShadow = true;
@@ -294,10 +296,8 @@
             scene.add(mesh);
             obstacles.push(mesh);
             
-            // Add bounding box for physics and game properties
             mesh.userData.box = new THREE.Box3().setFromObject(mesh);
-            mesh.userData.isBlock = true; // Identify as a block
-            mesh.userData.isBreakable = true; // All blocks are breakable targets for decals
+            mesh.userData.isBlock = true;
             return mesh;
         }
 
@@ -311,7 +311,6 @@
                 
                 // Tall pillar
                 const pillar = createBlock(x, z, 2, 8 + Math.random()*4, 2);
-                pillar.userData.isBreakable = false; // Make large structures immune to removal
 
                 // Lintel (connecting top)
                 if(Math.random() > 0.5) {
@@ -325,28 +324,46 @@
                     const bridge = createBlock(midX, midZ, 2, blockHeight, 10);
                     bridge.position.y = getRawTerrainY(midX, midZ) + 10 + blockHeight/2;
                     bridge.lookAt(x, bridge.position.y, z);
-                    bridge.userData.isBreakable = false; // Lintels immune
                 }
             }
             
-            // Center jumping block (small jumpable block can be marked/removed)
+            // Center jumping block
             createBlock(cx, cz, 4, 3, 4);
         }
 
         function generateMudPuddles(count) {
             const range = 150;
+            const puddleRadius = 3.5;
+            const segments = 16; // Use higher segments for smoothness
+
             for (let i = 0; i < count; i++) {
                 const x = (Math.random() - 0.5) * range;
                 const z = (Math.random() - 0.5) * range;
-                const y = getRawTerrainY(x, z) + 0.01; // Slightly above terrain
+                const centerPos = new THREE.Vector3(x, 0, z);
 
-                // Use a thin cylinder/plane for the puddle
-                const puddleGeo = new THREE.CircleGeometry(3 + Math.random() * 2, 16);
+                // Use a dense CircleGeometry for vertex manipulation
+                const puddleGeo = new THREE.CircleGeometry(puddleRadius, segments);
                 puddleGeo.rotateX(-Math.PI / 2);
                 
+                const posAttr = puddleGeo.attributes.position;
+                const vertexCount = posAttr.count;
+
+                for (let j = 0; j < vertexCount; j++) {
+                    // Calculate world X and Z for this vertex
+                    const vx = posAttr.getX(j) + centerPos.x;
+                    const vz = posAttr.getZ(j) + centerPos.z;
+                    
+                    // Sample the noise function for the height
+                    let vy = getRawTerrainY(vx, vz); 
+                    
+                    // Set the Y position of the vertex relative to the mesh's center Y (0)
+                    posAttr.setY(j, vy - centerPos.y + 0.01); 
+                }
+                
+                puddleGeo.computeVertexNormals();
+                
                 const puddle = new THREE.Mesh(puddleGeo, mudMat);
-                puddle.position.set(x, y, z);
-                puddle.rotation.y = Math.random() * Math.PI * 2;
+                puddle.position.set(centerPos.x, centerPos.y, centerPos.z); 
                 puddle.receiveShadow = true;
                 scene.add(puddle);
             }
@@ -356,12 +373,74 @@
         generateStonehenge(0, -30);
         generateStonehenge(50, 50);
         generateStonehenge(-50, 40);
-        generateMudPuddles(30); // Create 30 mud puddles
+        generateMudPuddles(30); 
 
+        // --- NIGHT MODE LOGIC ---
+        window.setNightMode = (isNight) => {
+            if (typeof isNight !== 'boolean') return;
+            window.isNight = isNight;
+            
+            // 1. Scene Lighting/Color
+            const targetIntensity = isNight ? nightDirLightIntensity : dayDirLightIntensity;
+            const targetColor = isNight ? nightSkyColor : daySkyColor;
+            
+            // Smoother transition for visuals
+            new THREE.Color(scene.background.getHex()).lerp(new THREE.Color(targetColor), 1.0);
+            scene.background.set(targetColor);
+            scene.fog.color.set(targetColor);
+            dirLight.intensity = targetIntensity;
+
+            // 2. Torch Logic
+            if (isNight) {
+                // Hide current weapon
+                if (currentWeaponIdx !== -1) weapons[currentWeaponIdx].mesh.visible = false;
+
+                // Add Point Light for local illumination
+                if (!torchLight) {
+                    torchLight = new THREE.PointLight(0xffaa55, 10, 25, 1);
+                    torchLight.castShadow = true;
+                    camera.add(torchLight); 
+                    torchLight.position.set(0.5, -0.4, -1.0);
+                }
+                torchLight.visible = true;
+
+                // Mock torch model (assuming Torch.glb couldn't be loaded)
+                if (!torchMesh) {
+                     const torchGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.8, 8);
+                     const torchMat = new THREE.MeshStandardMaterial({color: 0x333333});
+                     torchMesh = new THREE.Mesh(torchGeo, torchMat);
+                     handGroup.add(torchMesh);
+                     torchMesh.castShadow = true;
+                     torchMesh.position.set(0.5, -0.5, 0);
+                     torchMesh.rotation.z = Math.PI / 4;
+                }
+                torchMesh.visible = true;
+                document.getElementById('weapon-name').innerText = "TORCH";
+
+            } else {
+                // Day mode
+                if (torchLight) torchLight.visible = false;
+                if (torchMesh) torchMesh.visible = false;
+
+                // Restore current weapon visibility
+                if (currentWeaponIdx !== -1) {
+                    weapons[currentWeaponIdx].mesh.visible = true;
+                    document.getElementById('weapon-name').innerText = weapons[currentWeaponIdx].name;
+                } else {
+                    document.getElementById('weapon-name').innerText = "FISTS";
+                }
+            }
+        };
+
+        // Expose to window for console use
+        window.isNight = false; // Initial state
+        window.setNightMode = window.setNightMode; // Expose the function
+        
         // --- INPUTS ---
         const keys = { w:false, a:false, s:false, d:false, space:false, shift:false, c:false };
         
-        // Pointer Lock
+        // ... (Input handlers remain the same) ...
+
         document.body.addEventListener('click', (e) => {
             if(document.pointerLockElement !== document.body) {
                 document.body.requestPointerLock();
@@ -399,25 +478,41 @@
         // --- PHYSICS & LOGIC ---
         let isAttacking = false;
         
-        // Helper function to create and time the removal of a decal
+        // Helper function to create and time the removal of a decal (the "slit")
         function createDecal(hit) {
             const object = hit.object;
             const position = hit.point.clone();
             const orientation = new THREE.Euler().setFromQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), hit.face.normal));
             
-            // Decal size (small impact mark)
-            const size = new THREE.Vector3(1, 1, 1).multiplyScalar(0.5 + Math.random() * 0.5); 
+            // Decal size (small slit/chip)
+            const randomSize = 0.5 + Math.random() * 0.2; 
+            const size = new THREE.Vector3(randomSize, randomSize, randomSize); 
+
+            // Make it a "slit" by distorting the projection box based on the normal
+            const normal = hit.face.normal;
+            if (Math.abs(normal.x) > 0.9) { // Hitting side (X-face)
+                size.x = 0.05; // Thin along the normal axis
+                size.y = randomSize * 2;
+                size.z = randomSize * 2;
+            } else if (Math.abs(normal.y) > 0.9) { // Hitting top/bottom (Y-face)
+                size.y = 0.05;
+                size.x = randomSize * 2;
+                size.z = randomSize * 2;
+            } else if (Math.abs(normal.z) > 0.9) { // Hitting front/back (Z-face)
+                size.z = 0.05;
+                size.x = randomSize * 2;
+                size.y = randomSize * 2;
+            }
             
             const decalGeometry = new DecalGeometry(object, position, orientation, size);
             const decal = new THREE.Mesh(decalGeometry, brokenDecalMat);
             
             scene.add(decal);
 
-            // Set up removal timer
+            // Set up removal timer (15 seconds)
             setTimeout(() => {
                 scene.remove(decal);
                 decal.geometry.dispose();
-                // Decal material is shared, no need to dispose
             }, DECAL_FADE_TIME);
         }
 
@@ -429,13 +524,12 @@
             const raycaster = new THREE.Raycaster();
             const center = new THREE.Vector2(0, 0);
             raycaster.setFromCamera(center, camera);
-            raycaster.far = 5; // Interaction range
+            raycaster.far = 5; 
             
             const hits = raycaster.intersectObjects(obstacles);
             if (hits.length > 0) {
                 const block = hits[0].object;
                 if (block.userData.isBlock) {
-                    // Create an impact mark (decal)
                     createDecal(hits[0]);
                 }
             }
@@ -483,16 +577,13 @@
             return hits.length > 0;
         }
 
-        // Corrected function to find actual ground height (terrain or block top)
         function getActualGroundY(x, z) {
             let groundY = getRawTerrainY(x, z); 
             
             for(let ob of obstacles) {
                 const box = ob.userData.box;
                 if(x >= box.min.x && x <= box.max.x && z >= box.min.z && z <= box.max.z) {
-                    // Check if player is not currently deep inside the block (prevents teleporting up)
                     if (playerBody.position.y < box.max.y + PLAYER_HALF_HEIGHT + 0.1) {
-                         // Only consider it 'ground' if the block top is below the player
                         if(box.max.y > groundY && box.max.y <= playerBody.position.y + 0.1) {
                             groundY = box.max.y;
                         }
@@ -502,7 +593,6 @@
             return groundY;
         }
         
-        // Horizontal Collision Check 
         function checkHorizontalCollision(currentPos, newPos, radius) {
             const nextBox = new THREE.Box3(
                 new THREE.Vector3(newPos.x - radius, newPos.y - PLAYER_HALF_HEIGHT, newPos.z - radius),
@@ -512,7 +602,6 @@
             for (let ob of obstacles) {
                 const obBox = ob.userData.box;
                 if (nextBox.intersectsBox(obBox)) {
-                     // Only register collision if the player is hitting the side, not already standing on top
                      if (currentPos.y < obBox.max.y) {
                         return true;
                      }
@@ -544,7 +633,6 @@
             } else {
                 state.cameraHeight = THREE.MathUtils.lerp(state.cameraHeight, 1.7, 0.2); 
             }
-            // Clamp camera height to prevent sinking
             camera.position.y = state.cameraHeight;
 
 
@@ -571,22 +659,19 @@
             let newX = originalPos.x + state.velocity.x * delta;
             let newZ = originalPos.z + state.velocity.z * delta;
 
-            // 4. Horizontal Collision Check (prevents clipping through walls/blocks)
-            
-            // Check X movement
+            // 4. Horizontal Collision Check 
             const checkXPos = new THREE.Vector3(newX, originalPos.y, originalPos.z);
             if (!checkHorizontalCollision(originalPos, checkXPos, PLAYER_RADIUS)) {
                 playerBody.position.x = newX;
             } else {
-                state.velocity.x = 0; // Stop X movement on hit
+                state.velocity.x = 0; 
             }
             
-            // Check Z movement
             const checkZPos = new THREE.Vector3(playerBody.position.x, originalPos.y, newZ);
             if (!checkHorizontalCollision(originalPos, checkZPos, PLAYER_RADIUS)) {
                 playerBody.position.z = newZ;
             } else {
-                state.velocity.z = 0; // Stop Z movement on hit
+                state.velocity.z = 0; 
             }
 
             // 5. Vertical Movement
@@ -597,15 +682,14 @@
             const playerBaseY = playerBody.position.y - PLAYER_HALF_HEIGHT;
             
             if(playerBaseY < groundH) {
-                playerBody.position.y = groundH + PLAYER_HALF_HEIGHT; // Set player center Y
+                playerBody.position.y = groundH + PLAYER_HALF_HEIGHT; 
                 state.velocity.y = 0;
                 state.onGround = true;
             } else {
                 state.onGround = false;
             }
 
-
-            // Weapon Sway (Idle/Run)
+            // Weapon/Torch Sway
             const time = clock.getElapsedTime();
             if(!isAttacking) {
                 handGroup.position.y = -0.4 + Math.sin(time * 2) * 0.02;
