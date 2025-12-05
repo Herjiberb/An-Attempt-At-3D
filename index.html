@@ -3,14 +3,36 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3rd Person RPG - Three.js</title>
+    <title>3rd Person RPG - Infinite World</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #87CEEB; }
-        #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-family: sans-serif; pointer-events: none; }
+        body { margin: 0; overflow: hidden; background-color: #87CEEB; user-select: none; }
+        #ui {
+            position: absolute; top: 20px; left: 20px; color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            text-shadow: 2px 2px 0 #000; pointer-events: none;
+        }
+        #instructions {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            color: rgba(255, 255, 255, 0.8); font-family: monospace; font-size: 14px;
+            text-align: center; pointer-events: none;
+        }
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: white; font-family: sans-serif; font-size: 24px; font-weight: bold;
+            text-shadow: 0 0 10px black; transition: opacity 0.5s;
+        }
     </style>
 </head>
 <body>
-    <div id="loading">Loading World...</div>
+    <div id="ui">
+        <h2>Legend of the Infinite</h2>
+        <div id="weapon-name">Weapon: None</div>
+    </div>
+    <div id="loading">Loading Assets...</div>
+    <div id="instructions">
+        WASD to Move • MOUSE to Look • CLICK to Lock Cursor<br>
+        L-CLICK Attack • R-CLICK Switch Weapon
+    </div>
 
     <script type="importmap">
         {
@@ -24,24 +46,53 @@
     <script type="module">
         import * as THREE from 'three';
         import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 
         // --- CONFIGURATION ---
-        const SETTINGS = {
-            speed: 10,
-            jumpForce: 15,
-            gravity: 30,
-            turnSpeed: 10,
-            cameraHeight: 4,
-            cameraDistance: 8
-        };
+        const SEED = 12345; // Change this number to get a different world
+        const RENDER_DISTANCE = 80;
+        const SPEED = 10;
+        const JUMP_FORCE = 15;
+        
+        // --- SEEDED NOISE (Simple Value Noise) ---
+        // This allows the terrain to be infinite yet consistent
+        function simpleHash(x, z) {
+            let h = Math.sin(x * 12.9898 + z * 78.233 + SEED) * 43758.5453;
+            return h - Math.floor(h);
+        }
+        function noise(x, z) {
+            let i = Math.floor(x);
+            let j = Math.floor(z);
+            let u = x - i;
+            let v = z - j;
+            // Smoothstep
+            u = u * u * (3 - 2 * u);
+            v = v * v * (3 - 2 * v);
+            
+            // Mix
+            const a = simpleHash(i, j);
+            const b = simpleHash(i + 1, j);
+            const c = simpleHash(i, j + 1);
+            const d = simpleHash(i + 1, j + 1);
+            
+            return a * (1 - u) * (1 - v) + 
+                   b * u * (1 - v) + 
+                   c * (1 - u) * v + 
+                   d * u * v;
+        }
+        function getTerrainHeight(x, z) {
+            // Combine frequencies for "Green Hill" look
+            let y = noise(x * 0.05, z * 0.05) * 10;
+            y += noise(x * 0.02, z * 0.02) * 20; // Big hills
+            return Math.max(y - 5, -10); // Floor
+        }
 
         // --- SCENE SETUP ---
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x87CEEB); // Sky Blue
-        scene.fog = new THREE.FogExp2(0x87CEEB, 0.02); // Depth fog
+        scene.background = new THREE.Color(0x87CEEB);
+        scene.fog = new THREE.Fog(0x87CEEB, 20, RENDER_DISTANCE - 10);
 
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, RENDER_DISTANCE);
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.shadowMap.enabled = true;
@@ -49,271 +100,303 @@
         document.body.appendChild(renderer.domElement);
 
         // --- LIGHTING ---
-        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.8);
         scene.add(hemiLight);
 
-        const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
         dirLight.position.set(50, 100, 50);
         dirLight.castShadow = true;
-        dirLight.shadow.mapSize.width = 2048;
-        dirLight.shadow.mapSize.height = 2048;
-        dirLight.shadow.camera.near = 0.5;
-        dirLight.shadow.camera.far = 500;
-        dirLight.shadow.camera.left = -50;
-        dirLight.shadow.camera.right = 50;
         dirLight.shadow.camera.top = 50;
         dirLight.shadow.camera.bottom = -50;
+        dirLight.shadow.camera.left = -50;
+        dirLight.shadow.camera.right = 50;
+        dirLight.shadow.mapSize.width = 2048;
+        dirLight.shadow.mapSize.height = 2048;
         scene.add(dirLight);
 
-        // --- TERRAIN GENERATION (Green Hills) ---
-        // We use a math function to determine height so we can "walk" on it easily
-        function getTerrainHeight(x, z) {
-            // Simple sine wave combination for hills
-            return (Math.sin(x * 0.1) * 2) + (Math.cos(z * 0.1) * 2) + (Math.sin(x * 0.3 + z * 0.2) * 1);
-        }
-
-        const planeGeometry = new THREE.PlaneGeometry(200, 200, 100, 100);
-        planeGeometry.rotateX(-Math.PI / 2);
-        
-        // Apply height map to vertices
-        const posAttribute = planeGeometry.attributes.position;
-        for (let i = 0; i < posAttribute.count; i++) {
-            const x = posAttribute.getX(i);
-            const z = posAttribute.getZ(i);
-            const y = getTerrainHeight(x, z);
-            posAttribute.setY(i, y);
-        }
-        planeGeometry.computeVertexNormals();
-
-        const planeMaterial = new THREE.MeshStandardMaterial({ 
-            color: 0x55aa55, // Green
-            roughness: 0.8,
-            metalness: 0.1,
+        // --- INFINITE TERRAIN MESH ---
+        // A rolling grid that stays under the player
+        const CHUNK_SIZE = 100;
+        const RES = 64;
+        const geo = new THREE.PlaneGeometry(CHUNK_SIZE * 2, CHUNK_SIZE * 2, RES, RES);
+        geo.rotateX(-Math.PI / 2);
+        const mat = new THREE.MeshStandardMaterial({ 
+            color: 0x4C9A2A, 
+            roughness: 0.9,
             side: THREE.DoubleSide
         });
-        const terrain = new THREE.Mesh(planeGeometry, planeMaterial);
-        terrain.receiveShadow = true;
-        scene.add(terrain);
+        const terrainMesh = new THREE.Mesh(geo, mat);
+        terrainMesh.receiveShadow = true;
+        scene.add(terrainMesh);
 
-        // --- PLAYER SYSTEM ---
-        const playerGroup = new THREE.Group();
-        scene.add(playerGroup);
-
-        // Placeholder Character (Capsule) - REPLACED BY GLB LATER
-        const playerGeo = new THREE.CapsuleGeometry(0.5, 1, 4, 8);
-        const playerMat = new THREE.MeshStandardMaterial({ color: 0xff0000 });
-        const playerMesh = new THREE.Mesh(playerGeo, playerMat);
-        playerMesh.position.y = 1; 
-        playerMesh.castShadow = true;
-        playerGroup.add(playerMesh); // Add mesh to the group
-
-        // Weapon Placeholder Holder
-        const handGroup = new THREE.Group();
-        handGroup.position.set(0.6, 1, 0.4); // Position relative to player center
-        playerGroup.add(handGroup);
-
-        // --- ASSET LOADING LOGIC ---
-        // This is where you swap the placeholder for your real files
-        const loader = new GLTFLoader();
-        let mixer; // Animation Mixer
-        
-        const weapons = {
-            current: 0,
-            list: ['BattleAxe.glb', 'Sword.glb', 'Pickaxe.glb'], // Your files
-            meshes: []
-        };
-
-        // Function to load actual models (Call this to activate real assets)
-        function loadAssets() {
-            // 1. Load Player
-            /* loader.load('./Player.glb', (gltf) => {
-                const model = gltf.scene;
-                model.traverse(c => { if(c.isMesh) c.castShadow = true; });
+        function updateTerrain(playerPos) {
+            // Snap mesh to player grid
+            const snapX = Math.floor(playerPos.x);
+            const snapZ = Math.floor(playerPos.z);
+            terrainMesh.position.set(snapX, 0, snapZ);
+            
+            // Update vertices based on world position
+            const posAttr = terrainMesh.geometry.attributes.position;
+            for(let i=0; i < posAttr.count; i++) {
+                // Local coordinate
+                const lx = (i % (RES + 1)) / RES * (CHUNK_SIZE * 2) - CHUNK_SIZE;
+                const lz = Math.floor(i / (RES + 1)) / RES * (CHUNK_SIZE * 2) - CHUNK_SIZE;
                 
-                // Remove placeholder
-                playerGroup.remove(playerMesh);
-                playerGroup.add(model);
+                // World coordinate
+                const wx = lx + snapX;
+                const wz = lz + snapZ;
                 
-                // Setup Animations
-                mixer = new THREE.AnimationMixer(model);
-                // const action = mixer.clipAction(gltf.animations[0]); // Run/Idle
-                // action.play();
-                
-                // FIND HAND BONE (Crucial for weapons)
-                // You must check Blender for exact bone name, usually 'RightHand' or 'mixamorigRightHand'
-                // const handBone = model.getObjectByName('RightHand'); 
-                // if(handBone) handBone.add(handGroup); // Attach weapon holder to bone
-                
-                document.getElementById('loading').style.display = 'none';
-            });
-            */
-
-           // 2. Load Weapons (Simulated with boxes for now)
-           const createWeapon = (color) => {
-               const geo = new THREE.BoxGeometry(0.2, 0.2, 1);
-               const mat = new THREE.MeshStandardMaterial({ color: color });
-               return new THREE.Mesh(geo, mat);
-           };
-           
-           // Simulating loaded GLBs with primitives
-           weapons.meshes.push(createWeapon(0xffd700)); // Axe (Gold)
-           weapons.meshes.push(createWeapon(0xc0c0c0)); // Sword (Silver)
-           weapons.meshes.push(createWeapon(0x8b4513)); // Pickaxe (Brown)
-           
-           // Add first weapon
-           handGroup.add(weapons.meshes[0]);
-           document.getElementById('loading').style.display = 'none';
+                // Set Height
+                posAttr.setY(i, getTerrainHeight(wx, wz));
+            }
+            posAttr.needsUpdate = true;
+            terrainMesh.geometry.computeVertexNormals();
         }
 
-        loadAssets(); // Start loading
+        // --- PLAYER & ASSETS ---
+        const playerContainer = new THREE.Group();
+        scene.add(playerContainer);
+
+        // Camera Pivot (The invisible point the camera rotates around)
+        const cameraPivot = new THREE.Object3D();
+        playerContainer.add(cameraPivot);
+        cameraPivot.position.y = 1.5; // Look at head height
+        
+        // Camera Holder (For distance)
+        const cameraHolder = new THREE.Object3D();
+        cameraHolder.position.z = 6; // Distance behind player
+        cameraPivot.add(cameraHolder);
+        cameraHolder.add(camera);
+
+        // Hand / Weapon Holder
+        const handGroup = new THREE.Group();
+        // Since Player.glb has no bones, we position this relative to the body roughly where a hand is
+        handGroup.position.set(0.4, 1.0, 0.4); 
+        playerContainer.add(handGroup);
+
+        const loader = new GLTFLoader();
+        const weapons = [];
+        let currentWeaponIdx = 0;
+        let enemyModel = null;
+
+        // Asset Loader
+        async function loadGameAssets() {
+            try {
+                // 1. Load Player
+                const playerGltf = await loader.loadAsync('./Player.glb');
+                const playerMesh = playerGltf.scene;
+                playerMesh.traverse(c => { if(c.isMesh) c.castShadow = true; });
+                // Scale player if needed (check your export, assumed 1 unit = 1 meter)
+                // playerMesh.scale.set(1,1,1); 
+                playerContainer.add(playerMesh);
+
+                // 2. Load Weapons
+                const weaponFiles = ['BattleAxe.glb', 'Sword.glb', 'Pickaxe.glb'];
+                const weaponNames = ['Battle Axe', 'Sword', 'Pickaxe'];
+                
+                for(let i=0; i<weaponFiles.length; i++) {
+                    const gltf = await loader.loadAsync('./' + weaponFiles[i]);
+                    const wMesh = gltf.scene;
+                    // Standardize weapon scale/rotation if exports are weird
+                    // wMesh.scale.set(1.5, 1.5, 1.5); 
+                    wMesh.visible = false;
+                    handGroup.add(wMesh);
+                    weapons.push({ mesh: wMesh, name: weaponNames[i] });
+                }
+                
+                if(weapons.length > 0) {
+                    weapons[0].mesh.visible = true;
+                    document.getElementById('weapon-name').innerText = "Weapon: " + weapons[0].name;
+                }
+
+                // 3. Load Enemy (for scattering)
+                const enemyGltf = await loader.loadAsync('./Enemy.glb');
+                enemyModel = enemyGltf.scene;
+                enemyModel.traverse(c => { if(c.isMesh) { c.castShadow = true; c.receiveShadow = true; }});
+                
+                // Spawn some enemies
+                spawnEnemies();
+
+                document.getElementById('loading').style.display = 'none';
+
+            } catch (error) {
+                console.error("Error loading assets:", error);
+                document.getElementById('loading').innerText = "Error Loading Files (See Console)";
+            }
+        }
+        loadGameAssets();
+
+        const enemies = [];
+        function spawnEnemies() {
+            if(!enemyModel) return;
+            // Spawn 10 enemies near start
+            for(let i=0; i<10; i++) {
+                const e = enemyModel.clone();
+                const angle = Math.random() * Math.PI * 2;
+                const dist = 10 + Math.random() * 20;
+                e.position.set(Math.sin(angle)*dist, 0, Math.cos(angle)*dist);
+                // Set height
+                e.position.y = getTerrainHeight(e.position.x, e.position.z);
+                scene.add(e);
+                enemies.push(e);
+            }
+        }
 
         // --- CONTROLS ---
-        const keys = { w: false, a: false, s: false, d: false, space: false };
-        const playerVelocity = new THREE.Vector3();
-        let isGrounded = false;
-        let isAttacking = false;
+        // Pointer Locking for Mouse Look
+        const canvas = renderer.domElement;
+        canvas.addEventListener('click', () => {
+            canvas.requestPointerLock();
+        });
 
+        let isLocked = false;
+        document.addEventListener('pointerlockchange', () => {
+            isLocked = document.pointerLockElement === canvas;
+        });
+
+        // Mouse Look Logic
+        let camPitch = 0;
+        document.addEventListener('mousemove', (e) => {
+            if(!isLocked) return;
+            // Rotate Player Container for YAW (Left/Right)
+            // Ideally we rotate the cameraPivot for looking, and player for moving
+            // But for standard MMO feel: Mouse X rotates player body
+            playerContainer.rotation.y -= e.movementX * 0.002;
+            
+            // Mouse Y rotates camera pivot (Pitch)
+            camPitch -= e.movementY * 0.002;
+            camPitch = Math.max(-0.5, Math.min(1.0, camPitch)); // Clamp look up/down
+            cameraPivot.rotation.x = camPitch;
+        });
+
+        // Keyboard
+        const keys = { w:false, a:false, s:false, d:false, space:false };
         window.addEventListener('keydown', (e) => {
-            const key = e.key.toLowerCase();
-            if (keys.hasOwnProperty(key)) keys[key] = true;
-            if (e.code === 'Space') keys.space = true;
+            const k = e.key.toLowerCase();
+            if(keys.hasOwnProperty(k)) keys[k] = true;
+            if(e.code === 'Space') keys.space = true;
         });
-
         window.addEventListener('keyup', (e) => {
-            const key = e.key.toLowerCase();
-            if (keys.hasOwnProperty(key)) keys[key] = false;
-            if (e.code === 'Space') keys.space = false;
+            const k = e.key.toLowerCase();
+            if(keys.hasOwnProperty(k)) keys[k] = false;
+            if(e.code === 'Space') keys.space = false;
         });
 
-        // Mouse Click to Attack
-        window.addEventListener('mousedown', () => {
-            if(!isAttacking) {
-                isAttacking = true;
-                
-                // Attack Animation Logic
-                const weapon = handGroup.children[0];
-                if(weapon) {
-                    // Simple swing animation via Tweening logic (manual)
-                    let startRot = weapon.rotation.x;
-                    let duration = 0;
-                    const swing = () => {
-                        duration += 0.1;
-                        weapon.rotation.x = startRot - Math.sin(duration * Math.PI) * 2; // Swing down
-                        if(duration < 1) requestAnimationFrame(swing);
-                        else {
-                            weapon.rotation.x = startRot;
-                            isAttacking = false;
-                            
-                            // Swap Weapon on attack finish (just to show functionality)
-                            swapWeapon();
-                        }
-                    };
-                    swing();
-                }
+        // Mouse Click Actions
+        window.addEventListener('mousedown', (e) => {
+            if(!isLocked) return;
+
+            if(e.button === 0) { // Left Click - Attack
+                performAttack();
+            } else if (e.button === 2) { // Right Click - Switch Weapon
+                switchWeapon();
             }
         });
+        
+        let isAttacking = false;
+        function performAttack() {
+            if(isAttacking) return;
+            isAttacking = true;
+            
+            // Procedural Attack Animation (Swing handGroup)
+            let rot = 0;
+            const initialRot = handGroup.rotation.x;
+            const speed = 0.2;
+            
+            // Simple swing down animation loop
+            const attackAnim = setInterval(() => {
+                rot += speed;
+                handGroup.rotation.x = initialRot + Math.sin(rot) * 2; // Swing
+                
+                if(rot > Math.PI) {
+                    clearInterval(attackAnim);
+                    handGroup.rotation.x = initialRot;
+                    isAttacking = false;
+                }
+            }, 16);
+        }
 
-        function swapWeapon() {
-            handGroup.remove(handGroup.children[0]);
-            weapons.current = (weapons.current + 1) % weapons.meshes.length;
-            handGroup.add(weapons.meshes[weapons.current]);
-            console.log("Swapped to: " + weapons.list[weapons.current]);
+        function switchWeapon() {
+            if(weapons.length === 0) return;
+            // Hide current
+            weapons[currentWeaponIdx].mesh.visible = false;
+            // Increment
+            currentWeaponIdx = (currentWeaponIdx + 1) % weapons.length;
+            // Show new
+            weapons[currentWeaponIdx].mesh.visible = true;
+            document.getElementById('weapon-name').innerText = "Weapon: " + weapons[currentWeaponIdx].name;
         }
 
         // --- GAME LOOP ---
         const clock = new THREE.Clock();
-        const tempVector = new THREE.Vector3();
+        const velocity = new THREE.Vector3();
+        let isGrounded = false;
 
         function animate() {
             requestAnimationFrame(animate);
             
-            const delta = Math.min(clock.getDelta(), 0.1); // Cap delta to prevent huge jumps
+            const delta = Math.min(clock.getDelta(), 0.1);
             
-            if (mixer) mixer.update(delta);
+            // 1. Terrain Update (Visual)
+            // Only update every few frames or if moved significantly for performance, 
+            // but here we do it every frame for smoothness on modern devices.
+            updateTerrain(playerContainer.position);
 
-            // 1. Movement Logic relative to Camera
-            const moveSpeed = SETTINGS.speed;
-            
-            // Get camera direction but ignore Y (flat movement)
-            const camForward = new THREE.Vector3();
-            camera.getWorldDirection(camForward);
-            camForward.y = 0;
-            camForward.normalize();
-            
-            const camRight = new THREE.Vector3();
-            camRight.crossVectors(camForward, new THREE.Vector3(0, 1, 0));
-
-            // Calculate input direction
-            const inputDir = new THREE.Vector3();
-            if (keys.w) inputDir.add(camForward);
-            if (keys.s) inputDir.sub(camForward);
-            if (keys.a) inputDir.sub(camRight);
-            if (keys.d) inputDir.add(camRight);
-
-            if (inputDir.length() > 0) {
-                inputDir.normalize();
+            // 2. Physics & Movement
+            if(isLocked) {
+                const forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0,1,0), playerContainer.rotation.y);
+                const right = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0,1,0), playerContainer.rotation.y);
                 
-                // Accelerate
-                playerVelocity.x = inputDir.x * moveSpeed;
-                playerVelocity.z = inputDir.z * moveSpeed;
+                const moveDir = new THREE.Vector3();
+                if(keys.w) moveDir.add(forward);
+                if(keys.s) moveDir.sub(forward);
+                if(keys.d) moveDir.add(right);
+                if(keys.a) moveDir.sub(right);
+                
+                if(moveDir.length() > 0) moveDir.normalize();
 
-                // Rotate player to face movement direction
-                const targetRotation = Math.atan2(inputDir.x, inputDir.z);
-                // Smooth rotation
-                const currentRotation = playerGroup.rotation.y;
-                let diff = targetRotation - currentRotation;
-                // Normalize angle
-                while (diff > Math.PI) diff -= Math.PI * 2;
-                while (diff < -Math.PI) diff += Math.PI * 2;
-                playerGroup.rotation.y += diff * SETTINGS.turnSpeed * delta;
-
+                velocity.x = moveDir.x * SPEED;
+                velocity.z = moveDir.z * SPEED;
             } else {
-                // Decelerate / Friction
-                playerVelocity.x *= 0.8;
-                playerVelocity.z *= 0.8;
+                velocity.x = 0;
+                velocity.z = 0;
             }
 
-            // 2. Gravity and Jumping
-            playerVelocity.y -= SETTINGS.gravity * delta;
+            // Gravity
+            velocity.y -= 30 * delta;
 
-            // Apply Velocity
-            playerGroup.position.x += playerVelocity.x * delta;
-            playerGroup.position.z += playerVelocity.z * delta;
-            playerGroup.position.y += playerVelocity.y * delta;
+            // Apply Move
+            playerContainer.position.x += velocity.x * delta;
+            playerContainer.position.z += velocity.z * delta;
+            playerContainer.position.y += velocity.y * delta;
 
-            // 3. Terrain Collision
-            const terrainHeight = getTerrainHeight(playerGroup.position.x, playerGroup.position.z);
-            
-            if (playerGroup.position.y < terrainHeight) {
-                playerGroup.position.y = terrainHeight;
-                playerVelocity.y = 0;
+            // Collision with Ground
+            const groundHeight = getTerrainHeight(playerContainer.position.x, playerContainer.position.z);
+            if(playerContainer.position.y < groundHeight) {
+                playerContainer.position.y = groundHeight;
+                velocity.y = 0;
                 isGrounded = true;
             } else {
                 isGrounded = false;
             }
 
-            if (keys.space && isGrounded) {
-                playerVelocity.y = SETTINGS.jumpForce;
-                isGrounded = false;
+            // Jump
+            if(keys.space && isGrounded) {
+                velocity.y = JUMP_FORCE;
             }
 
-            // 4. Camera Follow
-            // Calculate ideal camera position (Behind and above player)
-            const camOffset = new THREE.Vector3(0, SETTINGS.cameraHeight, -SETTINGS.cameraDistance);
-            camOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), playerGroup.rotation.y); // Rotate offset with player? Or keep it mouse controlled?
-            
-            // For true 3rd person RPG, usually camera rotates independently (Mouse), 
-            // but for simple WASD, let's keep camera fixed behind or use a simple offset logic:
-            
-            const targetPos = playerGroup.position.clone().add(new THREE.Vector3(0, SETTINGS.cameraHeight, SETTINGS.cameraDistance));
-            // Lerp camera for smoothness
-            camera.position.lerp(targetPos, 0.1);
-            camera.lookAt(playerGroup.position.clone().add(new THREE.Vector3(0, 2, 0))); // Look slightly above feet
+            // 3. Enemy Cleanup / Logic (Simple bobbing)
+            enemies.forEach(e => {
+                // Keep enemy on ground
+                const h = getTerrainHeight(e.position.x, e.position.z);
+                e.position.y = h;
+                e.lookAt(playerContainer.position); // Face player
+            });
 
             renderer.render(scene, camera);
         }
 
-        // Handle window resize
+        // Handle Resize
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
