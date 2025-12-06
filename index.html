@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FPS Parkour - Infinite</title>
+    <title>FPS Parkour - Infinite Wilds</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #050505; user-select: none; }
         #hud {
@@ -70,8 +70,9 @@
         import { DecalGeometry } from 'three/addons/geometries/DecalGeometry.js';
 
         // --- CONFIGURATION ---
-        // Random Seed for Infinite Generation
+        // Random Seed for Infinite Generation (New every reload)
         const SEED = Math.random() * 10000;
+        console.log("World Seed:", SEED);
         
         // Chunk Settings
         const CHUNK_SIZE = 60; // Size of each world tile
@@ -148,16 +149,31 @@
 
         // --- ASSETS ---
         const textureLoader = new THREE.TextureLoader();
-        const stoneTexture = textureLoader.load('./Stone.jpg'); stoneTexture.wrapS = stoneTexture.wrapT = THREE.RepeatWrapping;
-        const grassTexture = textureLoader.load('./Grass.jpg'); grassTexture.wrapS = grassTexture.wrapT = THREE.RepeatWrapping; grassTexture.repeat.set(10,10);
-        const woodTexture = textureLoader.load('./Wood.jpg'); woodTexture.wrapS = woodTexture.wrapT = THREE.RepeatWrapping;
-        const leafTexture = textureLoader.load('./Leaf.jpg'); leafTexture.wrapS = leafTexture.wrapT = THREE.RepeatWrapping; leafTexture.repeat.set(2,2);
+        
+        // Use placeholders if files missing, but setup for "Wood.png" and "Leaf.png"
+        const stoneTexture = textureLoader.load('./Stone.jpg', undefined, undefined, (err) => {}); 
+        stoneTexture.wrapS = stoneTexture.wrapT = THREE.RepeatWrapping;
+        
+        const grassTexture = textureLoader.load('./Grass.jpg', undefined, undefined, (err) => {}); 
+        grassTexture.wrapS = grassTexture.wrapT = THREE.RepeatWrapping; grassTexture.repeat.set(10,10);
+        
+        // Specific requested textures
+        const woodTexture = textureLoader.load('./Wood.png', undefined, undefined, (err) => {
+            // Fallback if Wood.png missing
+        });
+        woodTexture.wrapS = woodTexture.wrapT = THREE.RepeatWrapping;
+        
+        const leafTexture = textureLoader.load('./Leaf.png', undefined, undefined, (err) => {
+             // Fallback if Leaf.png missing
+        });
+        leafTexture.wrapS = leafTexture.wrapT = THREE.RepeatWrapping; leafTexture.repeat.set(2,2);
+        
         const brokenStoneTexture = textureLoader.load('./BrokenStone.jpg');
 
         const matStone = new THREE.MeshStandardMaterial({ map: stoneTexture, roughness: 0.8 });
         const matGrass = new THREE.MeshStandardMaterial({ map: grassTexture, roughness: 1.0 });
-        const matWood = new THREE.MeshStandardMaterial({ map: woodTexture, roughness: 0.9 });
-        const matLeaf = new THREE.MeshStandardMaterial({ map: leafTexture, alphaTest: 0.5, side: THREE.DoubleSide, transparent: true });
+        const matWood = new THREE.MeshStandardMaterial({ map: woodTexture, roughness: 0.9, color: 0x8B4513 }); // Brown tint if texture fails
+        const matLeaf = new THREE.MeshStandardMaterial({ map: leafTexture, alphaTest: 0.5, side: THREE.DoubleSide, transparent: true, color: 0x228B22 });
         const matDecal = new THREE.MeshStandardMaterial({ map: brokenStoneTexture, transparent: true, polygonOffset: true, polygonOffsetFactor: -4, depthWrite: false });
 
         const loader = new GLTFLoader();
@@ -170,35 +186,48 @@
                 const names = ['Battle Axe', 'Sword', 'Pickaxe', 'Torch'];
                 
                 for(let i=0; i<files.length; i++) {
-                    const gltf = await loader.loadAsync('./' + files[i]);
-                    const w = gltf.scene;
-                    w.traverse(c => { if(c.isMesh) c.castShadow = true; });
-                    w.visible = false;
-                    handGroup.add(w);
-                    
-                    if(names[i] === 'Torch') {
-                        w.scale.set(2,2,2);
-                        w.rotation.set(-0.5,0,0);
-                        w.position.set(0.3, -0.2, 0);
-                        // Glowing Tip
-                        const tip = new THREE.Mesh(new THREE.SphereGeometry(0.1,8,8), new THREE.MeshBasicMaterial({color:0xffaa00}));
-                        tip.position.set(0, 0.35, 0);
-                        w.add(tip);
-                        torchMesh = w;
-                    } 
-                    else if (names[i] === 'Battle Axe') {
-                        w.scale.set(2,2,2);
-                        w.rotation.set(0, Math.PI, 0); // FLIPPED 180 here to fix
-                    }
-                    else if (names[i] === 'Sword') {
-                        w.scale.set(1.5,1.5,1.5);
-                        w.rotation.set(0, Math.PI/2, 0);
-                    }
-                    else {
-                        w.scale.set(2,2,2);
-                    }
-                    weapons.push({ mesh: w, name: names[i] });
+                    // Try load, skip if fails (for running without local files)
+                    try {
+                        const gltf = await loader.loadAsync('./' + files[i]);
+                        const w = gltf.scene;
+                        w.traverse(c => { if(c.isMesh) c.castShadow = true; });
+                        w.visible = false;
+                        handGroup.add(w);
+                        
+                        if(names[i] === 'Torch') {
+                            w.scale.set(2,2,2);
+                            w.rotation.set(-0.5,0,0);
+                            w.position.set(0.3, -0.4, 0.2); // Better screen position
+                            // Glowing Tip
+                            const tip = new THREE.Mesh(new THREE.SphereGeometry(0.08,8,8), new THREE.MeshBasicMaterial({color:0xffaa00}));
+                            tip.position.set(0, 0.35, 0);
+                            w.add(tip);
+                            torchMesh = w;
+                        } 
+                        else if (names[i] === 'Battle Axe') {
+                            w.scale.set(2,2,2);
+                            w.rotation.set(0, Math.PI, 0); 
+                        }
+                        else if (names[i] === 'Sword') {
+                            w.scale.set(1.5,1.5,1.5);
+                            w.rotation.set(0, Math.PI/2, 0);
+                        }
+                        else {
+                            w.scale.set(2,2,2);
+                        }
+                        weapons.push({ mesh: w, name: names[i] });
+                    } catch (e) { console.warn("Asset not found: " + files[i]); }
                 }
+                
+                // If no weapons loaded, make a dummy block
+                if(weapons.length === 0) {
+                     const geo = new THREE.BoxGeometry(0.2, 0.2, 0.6);
+                     const mesh = new THREE.Mesh(geo, matWood);
+                     mesh.visible = false;
+                     handGroup.add(mesh);
+                     weapons.push({mesh:mesh, name:"Fists"});
+                }
+
                 switchWeapon(0);
                 document.getElementById('loading').style.display = 'none';
             } catch(e) { console.error(e); }
@@ -207,12 +236,15 @@
 
         function switchWeapon(idx) {
             if(weapons.length === 0) return;
+            // Turn off old torch
             if(currentWeaponIdx !== -1 && weapons[currentWeaponIdx].name === 'Torch') toggleNightMode(false);
+            
             weapons.forEach(w => w.mesh.visible = false);
             currentWeaponIdx = idx % weapons.length;
             const w = weapons[currentWeaponIdx];
             w.mesh.visible = true;
             document.getElementById('weapon-name').innerText = w.name;
+            
             if(w.name === 'Torch') toggleNightMode(true);
         }
 
@@ -229,10 +261,12 @@
 
             if(enable) {
                 if(!torchLight) {
-                    torchLight = new THREE.PointLight(0xff6600, 50, 40, 2); // Higher intensity, physics decay
+                    torchLight = new THREE.PointLight(0xff6600, 1, 30, 2); // Dynamic Physics light
                     torchLight.castShadow = true;
+                    // Shadow tuning for point light
+                    torchLight.shadow.bias = -0.0001; 
                     handGroup.add(torchLight);
-                    torchLight.position.set(0, 0.5, 0);
+                    torchLight.position.set(0.3, 0.2, 0);
                 }
                 torchLight.visible = true;
             } else if (torchLight) {
@@ -264,6 +298,7 @@
 
         function createTree(group, obstacles, x, z, isMother) {
             const y = getTerrainY(x, z);
+            // Mother trees are huge
             const scale = isMother ? 2.5 + Math.random() : 1.0 + Math.random() * 0.5;
             
             // Trunk
@@ -278,41 +313,38 @@
 
             // Branches
             if (isMother) {
-                const branchCount = 5 + Math.floor(Math.random() * 3);
+                const branchCount = 6 + Math.floor(Math.random() * 4);
                 for(let i=0; i<branchCount; i++) {
                     const branchH = 4 + Math.random() * 4;
-                    const bGeo = new THREE.CylinderGeometry(0.5, 0.8, branchH, 5);
+                    const bGeo = new THREE.CylinderGeometry(0.3, 0.6, branchH, 5);
                     const branch = new THREE.Mesh(bGeo, matWood);
                     
-                    // Position branch up the trunk
-                    const hPos = (h * 0.4) + Math.random() * (h * 0.4);
-                    branch.position.set(0, hPos - (h/2), 0);
-                    
-                    // Rotate out
-                    branch.rotation.z = (Math.PI / 3) + (Math.random() * 0.5);
-                    branch.rotation.y = Math.random() * Math.PI * 2;
-                    
-                    // Since rotation applies to geometry, we need to group or offset carefully.
-                    // Easiest: Add to trunk, but requires complex collision logic.
-                    // Better: Compute world pos.
-                    
+                    // Complex positioning for collision support
                     const container = new THREE.Object3D();
                     container.position.set(x, y + h/2, z); // Center of trunk
-                    container.rotation.y = Math.random() * Math.PI * 2;
                     
-                    // Offset mesh within container so pivot is at base
+                    const rotY = Math.random() * Math.PI * 2;
+                    container.rotation.y = rotY;
+                    
+                    // Height up trunk
+                    const hPos = (h * 0.2) + Math.random() * (h * 0.6);
+                    
+                    // Offset mesh so pivot is at base of branch
                     branch.position.set(branchH/2 * 0.8, hPos - (h/2) + (branchH/2 * 0.6), 0);
-                    branch.rotation.z = -Math.PI / 3;
+                    branch.rotation.z = -Math.PI / 3; // Angle out
                     
                     container.add(branch);
                     group.add(container);
                     
-                    // We need collision on branches! 
-                    // Note: Raycasting against rotated children works automatically in Three.js
+                    // Raycasting works recursively, but for simple array checks we push the mesh
+                    // Since it's a child of a rotated container, World Matrix updates handle collision
                     obstacles.push(branch);
 
                     // Leaves on branches
-                    addLeafBlob(group, obstacles, x + Math.cos(container.rotation.y)*4, y + hPos + 2, z + Math.sin(container.rotation.y)*4, scale);
+                    const leafX = x + Math.cos(rotY) * (branchH * 0.8);
+                    const leafZ = z + Math.sin(rotY) * (branchH * 0.8);
+                    const leafY = y + hPos + (branchH * 0.6);
+                    addLeafBlob(group, obstacles, leafX, leafY, leafZ, scale * 0.8);
                 }
             }
 
@@ -323,6 +355,7 @@
         function addLeafBlob(group, obstacles, x, y, z, scale) {
             const count = 3;
             for(let i=0; i<count; i++) {
+                // Icosahedron for bushy look
                 const geo = new THREE.IcosahedronGeometry((1.5 + Math.random()) * scale, 0);
                 const mesh = new THREE.Mesh(geo, matLeaf);
                 mesh.position.set(x + (Math.random()-0.5)*2, y + Math.random()*2, z + (Math.random()-0.5)*2);
@@ -350,6 +383,7 @@
             mesh.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
             mesh.receiveShadow = true;
             group.add(mesh);
+            chunkObstacles.push(mesh); // Ground is an obstacle for raycasting
 
             // 2. Objects (Trees & Stones)
             // Deterministic random for this chunk
@@ -363,12 +397,12 @@
                     const rnd = pseudoRandom(x, z);
                     const bioNoise = getNoise(x, z, 0.5); // Biome noise
                     
-                    // Trees (Groves)
+                    // Trees (Groves) - Only where biome noise is high
                     if (bioNoise > 0.8 && rnd > 0.6) {
                         const isMother = rnd > 0.95; // Rare Mother Tree
                         createTree(group, chunkObstacles, x, z, isMother);
                     }
-                    // Stonehenge / Ruins
+                    // Stonehenge / Ruins - Only where biome noise is low
                     else if (bioNoise < -1.0 && rnd > 0.92) {
                         const h = 2 + rnd * 6;
                         const stone = new THREE.Mesh(new THREE.BoxGeometry(2, h, 2), matStone);
@@ -379,12 +413,17 @@
                         group.add(stone);
                         chunkObstacles.push(stone);
                         
-                        // Bridge (Lintel)
+                        // Bridge (Lintel) - Horizontal Stone
                         if (rnd > 0.96) {
                             const bridge = new THREE.Mesh(new THREE.BoxGeometry(2, 1, 6), matStone);
+                            // Position it exactly on top
                             bridge.position.set(x, getTerrainY(x,z) + h + 0.5, z + 2);
-                            bridge.receiveShadow = true;
+                            bridge.receiveShadow = true; bridge.castShadow = true;
+                            // Add slight rotation to match
+                            bridge.rotation.y = stone.rotation.y;
                             group.add(bridge);
+                            
+                            // *** CRITICAL FIX: Add horizontal stone to collision list ***
                             chunkObstacles.push(bridge);
                         }
                     }
@@ -465,22 +504,30 @@
 
         // --- PHYSICS ENGINE ---
         const raycaster = new THREE.Raycaster();
-        const groundRay = new THREE.Raycaster();
+        const downRay = new THREE.Raycaster();
         
+        // Improved Ground Detection
         function getGroundHeight(pos) {
-            groundRay.set(new THREE.Vector3(pos.x, pos.y + 1, pos.z), new THREE.Vector3(0,-1,0));
-            groundRay.far = 5;
-            const hits = groundRay.intersectObjects(globalObstacles);
-            const terrainY = getTerrainY(pos.x, pos.z);
-            let obstacleY = -999;
-            if (hits.length > 0) obstacleY = hits[0].point.y;
-            return Math.max(terrainY, obstacleY);
+            // Start ray slightly above player's feet (0) + slight buffer
+            // Player origin is usually at feet, but let's cast from waist down to catch ledges
+            downRay.set(new THREE.Vector3(pos.x, pos.y + 1.0, pos.z), new THREE.Vector3(0, -1, 0));
+            
+            // Ray must go far enough to hit ground even if we are in air
+            downRay.far = 10; 
+            
+            const hits = downRay.intersectObjects(globalObstacles, true); // true = recursive check for children
+            if (hits.length > 0) {
+                // The point.y is the top of the object
+                return hits[0].point.y;
+            }
+            return -100; // Void
         }
 
         function checkWall(pos, dir) {
             raycaster.set(pos, dir);
-            raycaster.far = 1.0;
-            return raycaster.intersectObjects(globalObstacles).length > 0;
+            raycaster.far = 0.8; // Checking close walls
+            const hits = raycaster.intersectObjects(globalObstacles, true);
+            return hits.length > 0;
         }
 
         function onJumpPress() {
@@ -539,35 +586,41 @@
             
             // Check Wall Collisions (Waist Level)
             const waistPos = playerBody.position.clone(); 
-            waistPos.y -= 0.5; // Lower slightly
+            waistPos.y += 0.9; // Raycast from chest height for better wall detection
             
             // Look forward to detect wall jump opportunities
             const lookDir = new THREE.Vector3();
             camera.getWorldDirection(lookDir);
+            lookDir.y = 0; lookDir.normalize();
+            
             state.canWallJump = !state.onGround && checkWall(waistPos, lookDir);
 
-            // Simple Circle Collision preventer
-            // In a real engine, we'd sweep a capsule. Here, we raycast in move dir.
+            // Wall Slide / Stop
             if(move.length() > 0) {
                 if(checkWall(waistPos, move)) {
-                    state.velocity.x *= 0.1;
-                    state.velocity.z *= 0.1;
-                    // Slide
+                    state.velocity.x = 0;
+                    state.velocity.z = 0;
                 }
             }
 
             playerBody.position.x += state.velocity.x * delta;
             playerBody.position.z += state.velocity.z * delta;
-            playerBody.position.y += state.velocity.y * delta;
-
+            
             // --- Collision Step (Vertical) ---
+            // Predict where we will be vertically
+            let potentialY = playerBody.position.y + state.velocity.y * delta;
+            
+            // Get ground height at current X/Z
             const groundY = getGroundHeight(playerBody.position);
-            if(playerBody.position.y < groundY + PLAYER_HEIGHT) {
-                playerBody.position.y = groundY + PLAYER_HEIGHT;
+            
+            // If we fall below ground
+            if(potentialY < groundY) {
+                playerBody.position.y = groundY;
                 state.velocity.y = 0;
                 state.onGround = true;
                 state.canWallJump = false;
             } else {
+                playerBody.position.y = potentialY;
                 state.onGround = false;
             }
 
@@ -578,9 +631,12 @@
             handGroup.position.y = THREE.MathUtils.lerp(handGroup.position.y, -0.5 + Math.sin(time*swayFreq)*swayMag, 0.1);
             handGroup.position.x = THREE.MathUtils.lerp(handGroup.position.x, 0.5 + Math.cos(time*swayFreq)*swayMag * 0.5, 0.1);
             
-            // Torch Lag
+            // Torch Lag & Flicker
             if(window.isNight && torchLight) {
-                torchLight.intensity = 40 + Math.sin(time * 20) * 5 + Math.random() * 5;
+                // Flicker intensity
+                torchLight.intensity = 1.0 + Math.sin(time * 20) * 0.1 + Math.random() * 0.1;
+                // Slight position lag for realism
+                torchLight.position.x = 0.3 + Math.sin(time*5)*0.02;
             }
 
             renderer.render(scene, camera);
@@ -588,8 +644,6 @@
 
         // --- ATTACK ---
         function attack() {
-            if(window.isNight) return;
-            
             // Animation
             const anim = setInterval(() => {
                 handGroup.rotation.x -= 0.2;
@@ -608,15 +662,18 @@
             // Hitscan
             raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
             raycaster.far = 4;
-            const hits = raycaster.intersectObjects(globalObstacles);
+            const hits = raycaster.intersectObjects(globalObstacles, true);
             if(hits.length > 0) {
                 const hit = hits[0];
-                const decal = new THREE.Mesh(
-                    new DecalGeometry(hit.object, hit.point, new THREE.Euler().setFromVector3(hit.face.normal), new THREE.Vector3(0.5,0.5,0.5)),
-                    matDecal
-                );
-                scene.add(decal);
-                setTimeout(() => { scene.remove(decal); decal.geometry.dispose(); }, 10000);
+                // Only place decals on non-transparent things (avoid leaves usually)
+                if(hit.object.material && !hit.object.material.transparent) {
+                    const decal = new THREE.Mesh(
+                        new DecalGeometry(hit.object, hit.point, new THREE.Euler().setFromVector3(hit.face.normal), new THREE.Vector3(0.5,0.5,0.5)),
+                        matDecal
+                    );
+                    scene.add(decal);
+                    setTimeout(() => { scene.remove(decal); decal.geometry.dispose(); }, 10000);
+                }
             }
         }
 
